@@ -35,7 +35,6 @@ from matplotlib.pyplot import cm
 from wmpl.Utils.OSTools import importBasemap
 Basemap = importBasemap()
 
-
 try:
     # If Numba is available, use the jit decorator with specified options
     from numba import njit
@@ -60,9 +59,6 @@ from wmpl.Utils.PlotMap import GroundMap
 from wmpl.Utils.TrajConversions import EARTH, G, ecef2ENU, enu2ECEF, geo2Cartesian, geo2Cartesian_vect, \
     cartesian2Geo, altAz2RADec_vect, raDec2AltAz, raDec2AltAz_vect, raDec2ECI, eci2RaDec, jd2Date, datetime2JD
 from wmpl.Utils.PyDomainParallelizer import parallelComputeGenerator
-
-#import cartopy.crs as ccrs
-#import cartopy.io.img_tiles as cimgt
 
 
 # Text size of image legends
@@ -1218,49 +1214,49 @@ def timingResiduals(params, observations, time_dict, weights=None, ret_stddev=Fa
 
 
 def moveStateVector(state_vect, radiant_eci, observations):
-        """ Moves the state vector position along the radiant line until it is before any points which are
-            projected on it. This is used to make sure that lengths and lags are properly calculated.
+    """ Moves the state vector position along the radiant line until it is before any points which are
+        projected on it. This is used to make sure that lengths and lags are properly calculated.
+    
+    Arguments:
+        state_vect: [ndarray] (x, y, z) ECI coordinates of the initial state vector (meters).
+        radiant_eci: [ndarray] (x, y, z) components of the unit radiant direction vector.
+        observations: [list] A list of ObservationPoints objects which hold measurements from individual
+            stations.
+
+    Return:
+        rad_cpa_beg: [ndarray] (x, y, z) ECI coordinates of the beginning point of the trajectory.
+
+    """
+
+    rad_cpa_list = []
+    radiant_ang_dist_list = []
+
+    # Go through all non-ignored observations from all stations
+    nonignored_observations = [obstmp for obstmp in observations if not obstmp.ignore_station]
+    for obs in nonignored_observations:
+
+        # Calculate closest points of approach (observed line of sight to radiant line) of the first point
+        # on the trajectory across all stations
+        _, rad_cpa, _ = findClosestPoints(obs.stat_eci_los[0], obs.meas_eci_los[0], state_vect, 
+            radiant_eci)
+
+        rad_cpa_list.append(rad_cpa)
+
+
+        # Compute angular distance from the first point to the radiant
+        rad_ang_dist = angleBetweenVectors(radiant_eci, vectNorm(rad_cpa))
+        radiant_ang_dist_list.append(rad_ang_dist)
+
         
-        Arguments:
-            state_vect: [ndarray] (x, y, z) ECI coordinates of the initial state vector (meters).
-            radiant_eci: [ndarray] (x, y, z) components of the unit radiant direction vector.
-            observations: [list] A list of ObservationPoints objects which hold measurements from individual
-                stations.
 
-        Return:
-            rad_cpa_beg: [ndarray] (x, y, z) ECI coordinates of the beginning point of the trajectory.
+    # # Choose the state vector with the largest height
+    # rad_cpa_beg = rad_cpa_list[np.argmax([vectMag(rad_cpa_temp) for rad_cpa_temp in rad_cpa_list])]
 
-        """
-
-        rad_cpa_list = []
-        radiant_ang_dist_list = []
-
-        # Go through all non-ignored observations from all stations
-        nonignored_observations = [obstmp for obstmp in observations if not obstmp.ignore_station]
-        for obs in nonignored_observations:
-
-            # Calculate closest points of approach (observed line of sight to radiant line) of the first point
-            # on the trajectory across all stations
-            _, rad_cpa, _ = findClosestPoints(obs.stat_eci_los[0], obs.meas_eci_los[0], state_vect, 
-                radiant_eci)
-
-            rad_cpa_list.append(rad_cpa)
+    # Choose the state vector as the point of initial observation closest to the radiant
+    rad_cpa_beg = rad_cpa_list[np.argmin([rad_ang_dist for rad_ang_dist in radiant_ang_dist_list])]
 
 
-            # Compute angular distance from the first point to the radiant
-            rad_ang_dist = angleBetweenVectors(radiant_eci, vectNorm(rad_cpa))
-            radiant_ang_dist_list.append(rad_ang_dist)
-
-            
-
-        # # Choose the state vector with the largest height
-        # rad_cpa_beg = rad_cpa_list[np.argmax([vectMag(rad_cpa_temp) for rad_cpa_temp in rad_cpa_list])]
-
-        # Choose the state vector as the point of initial observation closest to the radiant
-        rad_cpa_beg = rad_cpa_list[np.argmin([rad_ang_dist for rad_ang_dist in radiant_ang_dist_list])]
-
-
-        return np.ascontiguousarray(rad_cpa_beg)
+    return np.ascontiguousarray(rad_cpa_beg)
 
 
 
@@ -1967,7 +1963,7 @@ def _MCTrajSolve(params):
 
 
 def monteCarloTrajectory(traj, mc_runs=None, mc_pick_multiplier=1, noise_sigma=1, geometric_uncert=False, \
-    plot_results=True, mc_cores=None):
+    plot_results=True, mc_cores=None, max_runs=None):
     """ Estimates uncertanty in the trajectory solution by doing Monte Carlo runs. The MC runs are done 
         in parallel on all available computer cores.
 
@@ -1989,6 +1985,7 @@ def monteCarloTrajectory(traj, mc_runs=None, mc_pick_multiplier=1, noise_sigma=1
         plot_results: [bool] Plot the trajectory and orbit spread. True by default.
         mc_cores: [int] Number of CPU cores to use for Monte Carlo parallel procesing. None by default,
             which means that all available cores will be used.
+        max_runs: [int] Maximum number of runs. None by default, which will limit the runs to 10x req_num.
     """
 
 
@@ -2018,7 +2015,7 @@ def monteCarloTrajectory(traj, mc_runs=None, mc_pick_multiplier=1, noise_sigma=1
     # Run the MC solutions
     results_check_kwagrs = {"timing_res": traj.timing_res, "geometric_uncert": geometric_uncert}
     mc_results = parallelComputeGenerator(traj_generator, _MCTrajSolve, checkMCTrajectories, mc_runs, \
-        results_check_kwagrs=results_check_kwagrs, n_proc=mc_cores)
+        results_check_kwagrs=results_check_kwagrs, n_proc=mc_cores, max_runs=max_runs)
 
 
     # If there are no MC runs which were successful, recompute using geometric uncertainties
@@ -2029,7 +2026,7 @@ def monteCarloTrajectory(traj, mc_runs=None, mc_pick_multiplier=1, noise_sigma=1
         geometric_uncert = True
         results_check_kwagrs["geometric_uncert"] = geometric_uncert
         mc_results = parallelComputeGenerator(traj_generator, _MCTrajSolve, checkMCTrajectories, mc_runs, \
-            results_check_kwagrs=results_check_kwagrs, n_proc=mc_cores)
+            results_check_kwagrs=results_check_kwagrs, n_proc=mc_cores, max_runs=max_runs)
 
 
     # Add the original trajectory in the Monte Carlo results, if it is the one which has the best length match
@@ -2335,6 +2332,10 @@ def applyGravityDrop(eci_coord, t, r0, gravity_factor, vz):
     # The derived drop function does not work for small vz's, thus the classical drop function is used
     if abs(vz) < 100:
 
+        # Make sure r0 is not 0
+        if r0 == 0:
+            r0 = 1e-10
+
         # Calculate gravitational acceleration at given ECI coordinates
         g = G*earth_mass/r0**2
 
@@ -2344,9 +2345,17 @@ def applyGravityDrop(eci_coord, t, r0, gravity_factor, vz):
 
     else:
 
+        if r0 == 0:
+            r0 = 1e-10
+
+        # Compute the denominator to check it's not 0
+        denominator = r0 + vz*t
+        if denominator == 0:
+            denominator = 1e-10
+
         # Compute the drop using a drop model with a constant vertical velocity
-        drop = time_sign*(G*earth_mass/vz**2)*(r0/(r0 + vz*t) + np.log((r0 + vz*t)/r0) - 1)
-    
+        drop = time_sign*(G*earth_mass/vz**2)*(r0/denominator + np.log(denominator/r0) - 1)
+
 
     # Apply gravity drop to ECI coordinates
     return eci_coord - gravity_factor*drop*vectNorm(eci_coord)
@@ -2411,8 +2420,8 @@ class Trajectory(object):
         v_init_ht=None, estimate_timing_vel=True, monte_carlo=True, mc_runs=None, mc_pick_multiplier=1, \
         mc_noise_std=1.0, geometric_uncert=False, filter_picks=True, calc_orbit=True, show_plots=True, \
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
-        plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, \
-        mc_cores=None, fixed_times=None, enable_OSM_plot=False):
+        plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, 
+        mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False):
         """ Init the Ceplecha trajectory solver.
 
         Arguments:
@@ -2470,6 +2479,9 @@ class Trajectory(object):
                 which means that all cores will be used.
             fixed_times: [dict] Dictionary of fixed times for each station. None by default, meaning that
                 all stations will be estimated. Only used if estimate_timing_vel is True.
+            mc_runs_max: [int] Maximum number of Monte Carlo runs. None by default, which will limit the runs
+                to 10x req_num.
+            enable_OSM_plot: [bool] plot the ground track using OS maps as well as the default 
 
         """
 
@@ -2538,6 +2550,9 @@ class Trajectory(object):
         # Number of Monte Carlo runs
         self.mc_runs = mc_runs
 
+        # Maximum number of Monte Carlo runs, in case the MC runs have to be repeated many times
+        self.mc_runs_max = mc_runs_max
+    
         # Number of MC samples that will be taken for every point
         self.mc_pick_multiplier = mc_pick_multiplier
 
@@ -2696,6 +2711,9 @@ class Trajectory(object):
         # Initial state vector covariance matrix
         self.state_vect_cov = None
 
+        # flag to indicate whether only phase 1 solving ha been run
+        # default False to handle existing trajectory data
+        self.phase_1_only = False
 
 
     def generateFileName(self):
@@ -2705,7 +2723,7 @@ class Trajectory(object):
 
 
     def infillTrajectory(self, meas1, meas2, time_data, lat, lon, ele, station_id=None, excluded_time=None,
-        ignore_list=None, magnitudes=None, fov_beg=None, fov_end=None, obs_id=None, comment=''):
+        ignore_list=None, magnitudes=None, fov_beg=None, fov_end=None, obs_id=None, comment='', ignore_station=False):
         """ Initialize a set of measurements for a given station. 
     
         Arguments:
@@ -2782,8 +2800,8 @@ class Trajectory(object):
 
 
         # Init a new structure which will contain the observed data from the given site
-        obs = ObservedPoints(self.jdt_ref, meas1, meas2, time_data, lat, lon, ele, station_id=station_id, \
-            meastype=self.meastype, excluded_time=excluded_time, ignore_list=ignore_list, \
+        obs = ObservedPoints(self.jdt_ref, meas1, meas2, time_data, lat, lon, ele, station_id=station_id, 
+            meastype=self.meastype, excluded_time=excluded_time, ignore_list=ignore_list, ignore_station=ignore_station, 
             magnitudes=magnitudes, fov_beg=fov_beg, fov_end=fov_end, obs_id=obs_id, comment=comment)
             
         # Add observations to the total observations list
@@ -2877,7 +2895,7 @@ class Trajectory(object):
         self.infillTrajectory(meas1, meas2, obs.time_data, obs.lat, obs.lon, obs.ele, \
             station_id=obs.station_id, excluded_time=excluded_time, ignore_list=ignore_list, \
             magnitudes=magnitudes, fov_beg=obs.fov_beg, fov_end=obs.fov_end, obs_id=obs.obs_id, \
-            comment=obs.comment)
+            comment=obs.comment, ignore_station=obs.ignore_station)
 
 
 
@@ -4653,7 +4671,7 @@ class Trajectory(object):
 
         # Add the wmpl version and the date of the version and the date of the report
         out_str += "\n\n"
-        out_str += "Report generated by the Western Meteor Physics Library (WMPL) on {:s} UTC\n".format(str(datetime.datetime.now()))
+        out_str += "Report generated by the Western Meteor Physics Library (WMPL) on {:s} UTC\n".format(str(datetime.datetime.now(datetime.timezone.utc)))
 
         if HAS_GITPYTHON:
             # in the case where WMPL wasn't called from the WMPL home directory, git.Repo() will fail
@@ -5385,7 +5403,7 @@ class Trajectory(object):
 
 
         ### Plot lat/lon of the meteor ###
-        try:    
+        try:
             # Calculate mean latitude and longitude of all meteor points
             met_lon_mean = meanAngle([x for x in obs.meas_lon for obs in self.observations])
             met_lat_mean = meanAngle([x for x in obs.meas_lat for obs in self.observations])
@@ -5508,6 +5526,7 @@ class Trajectory(object):
             else:
                 plt.clf()
                 plt.close()
+
         except:
             pass            
         ######################################################################################################
@@ -6447,7 +6466,10 @@ class Trajectory(object):
                 for obs in temp_observations:
                     self.infillWithObs(obs)
 
-                
+                # Reset fixed times to 0, as the timing offsets have already been applied
+                for station in self.fixed_time_offsets:
+                    self.fixed_time_offsets[station] = 0.0
+
                 # Re-run the trajectory estimation with updated timings. This will update all calculated
                 # values up to this point
                 self.run(_rerun_timing=True, _prev_toffsets=self.time_diffs, _orig_obs=_orig_obs)
@@ -6627,7 +6649,7 @@ class Trajectory(object):
             traj_best, uncertainties = monteCarloTrajectory(self, mc_runs=self.mc_runs, \
                 mc_pick_multiplier=self.mc_pick_multiplier, noise_sigma=self.mc_noise_std, \
                 geometric_uncert=self.geometric_uncert, plot_results=self.save_results, \
-                mc_cores=self.mc_cores)
+                mc_cores=self.mc_cores, max_runs=self.mc_runs_max)
 
 
             ### Save uncertainties to the trajectory object ###

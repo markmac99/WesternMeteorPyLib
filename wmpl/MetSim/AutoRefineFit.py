@@ -13,8 +13,7 @@ import scipy.optimize
 
 from wmpl.Formats.Met import loadMet
 from wmpl.Trajectory.Trajectory import Trajectory
-from wmpl.MetSim.GUI import loadConstants, saveConstants, MetObservations
-from wmpl.MetSim.SimResults import SimulationResults
+from wmpl.MetSim.GUI import loadConstants, saveConstants, SimulationResults, MetObservations
 from wmpl.MetSim.MetSimErosion import runSimulation, Constants
 from wmpl.Utils.AtmosphereDensity import fitAtmPoly
 from wmpl.Utils.Math import meanAngle
@@ -552,7 +551,7 @@ if __name__ == "__main__":
 
 
     # Check that scipy version is at least 1.7.0 - older versions don't support Nelder-Mead with bounds
-    if scipy.__version__ < "1.7.0":
+    if tuple(map(int, scipy.__version__.split('.'))) < (1, 7, 0):
         print("ERROR: scipy version must be at least 1.7.0! Please upgrade scipy.")
         print("If you're using conda, then run:")
         print("conda install -c conda-forge scipy=1.7.3")
