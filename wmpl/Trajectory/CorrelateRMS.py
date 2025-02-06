@@ -1744,6 +1744,9 @@ contain data folders. Data folders should have FTPdetectinfo files together with
     arg_parser.add_argument('--mcmode', '--mcmode', type=int, default=0,
         help="Run just simple soln (1), just monte-carlos (2) or both (0, default).")
 
+    arg_parser.add_argument('--candidatemode', '--candidatemode', type=int, default=0,
+        help="Candidate trajectory mode: find and save candidates (1), load and process candidates (2), or both (0, default)")
+
     arg_parser.add_argument('--maxtrajs', '--maxtrajs', type=int, default=None,
         help="Max number of trajectories to reload in each pass when doing the Monte-Carlo phase")
     
@@ -1754,6 +1757,10 @@ contain data folders. Data folders should have FTPdetectinfo files together with
         help="Remote host to collect and return MC phase solutions to. Supports internet-distributed processing.")
     
     arg_parser.add_argument('--verbose', '--verbose', help='Verbose logging.', default=False, action="store_true")
+
+    arg_parser.add_argument('--logprefix', '--logprefix', type=str, default=None,
+        help="Optional prefix to apply to the logfile to help differentiate runs.")
+    
 
     # Parse the command line arguments
     cml_args = arg_parser.parse_args()
@@ -1775,6 +1782,10 @@ contain data folders. Data folders should have FTPdetectinfo files together with
     if not os.path.isdir(log_dir):
         os.makedirs(log_dir)
 
+    log_prefix = cml_args.logprefix
+    if log_prefix is None:
+        log_prefix = 'correlate_rms'
+
     # Init the logger
     #log = logging.getLogger("traj_correlator")
     log.setLevel(logging.DEBUG)
@@ -1786,7 +1797,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
     # Init the file handler
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"correlate_rms_{timestamp}.log")
+    log_file = os.path.join(log_dir, f"{log_prefix}_{timestamp}.log")
     file_handler = logging.handlers.TimedRotatingFileHandler(log_file, when="midnight", backupCount=7)
     file_handler.setFormatter(log_formatter)
     log.addHandler(file_handler)
@@ -1849,8 +1860,19 @@ contain data folders. Data folders should have FTPdetectinfo files together with
     if cml_args.maxtrajs is not None:
         max_trajs = int(cml_args.maxtrajs)
         
+    if cml_args.candidatemode == 1:
+        log.info('Running in find-candidates mode')
+    elif cml_args.candidatemode == 2:
+        log.info('Running in process-candidates mode')
+    
+    if cml_args.candidatemode == 2 and cml_args.mcmode ==2:
+        log.info('both candidatemode and mcmode cannot be 2, setting mcmode to 0')
+        cml_args.mcmode = 0
+
     if cml_args.mcmode == 2:
         log.info(f'Reloading at most {max_trajs} phase1 trajectories.')
+    elif cml_args.mcmode == 1:
+        log.info('running phase1 solutions')
 
     # Set the number of CPU cores
     cpu_cores = cml_args.cpucores
@@ -1918,7 +1940,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
             mcmode=cml_args.mcmode, max_trajs=max_trajs, remotehost=remotehost, verbose=cml_args.verbose)
         
         # If there is nothing to process, stop, unless we're in mcmode 2 (processing_list is not used in this case)
-        if not dh.processing_list and cml_args.mcmode < 2:
+        if not dh.processing_list and cml_args.mcmode < 2 and cml_args.candidatemode < 2:
             log.info("")
             log.info("Nothing to process!")
             log.info("Probably everything is already processed.")
@@ -1998,7 +2020,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                     # Run the trajectory correlator
                     tc = TrajectoryCorrelator(dh, trajectory_constraints, cml_args.velpart, data_in_j2000=True, enableOSM=cml_args.enableOSM)
                     bin_time_range = [bin_beg, bin_end]
-                    tc.run(event_time_range=event_time_range, mcmode=cml_args.mcmode, bin_time_range=bin_time_range)
+                    tc.run(event_time_range=event_time_range, mcmode=cml_args.mcmode, bin_time_range=bin_time_range, candmode=cml_args.candidatemode)
             else:
                 # there were no datasets to process
                 log.info('no data to process yet')
