@@ -472,6 +472,10 @@ class TrajectoryCorrelator(object):
             np.radians(pp.lon), pp.elev, meastype=1, station_id=pp.station_code, magnitudes=mag_data, 
             ignore_list=ignore_list, fov_beg=met.fov_beg, fov_end=met.fov_end, comment=comment)
 
+        checksum = int(np.sum([entry.x for entry in met.data]) % 10000)
+        mean_dt = met.reference_dt + datetime.timedelta(seconds=np.mean(time_data))
+        obs.id = "{:s}_{:s}_{:04d}".format(pp.station_code, mean_dt.strftime("%Y%m%d-%H%M%S.%f"), 
+            checksum)
         return obs
 
 
@@ -804,7 +808,6 @@ class TrajectoryCorrelator(object):
                     # Reinitialize the observations, rejecting the ignored stations
                     for obs in traj_status.observations:
                         if not obs.ignore_station:
-                            log.info(f'Adding {obs.station_id}')
                             traj.infillWithObs(obs)
 
                     log.info("")
@@ -1277,8 +1280,9 @@ class TrajectoryCorrelator(object):
                             log.info("Recomputing trajectory with new observations from stations:")
 
                             # Add new observations to the trajectory object
-                            for obs_new, _ in candidate_observations:
-                                log.info(obs_new.station_id)
+                            for obs_new, tmp_obs in candidate_observations:
+                                #log.info(f'{obs_new.station_id} {obs_new.obs_id}')
+                                obs_new.obs_id = tmp_obs.obs_id
                                 traj_full.infillWithObs(obs_new)
 
 
@@ -1316,6 +1320,7 @@ class TrajectoryCorrelator(object):
                         if met_obs.processed:
                             continue
 
+                        #log.info(f'obs id: {met_obs.obs_id}')
                         # Get station platepar
                         reference_platepar = self.dh.getPlatepar(met_obs)
                         obs1 = self.initObservationsObject(met_obs, reference_platepar)
@@ -1536,13 +1541,13 @@ class TrajectoryCorrelator(object):
                         log.info("-----------------------")
                         log.info(f'SAVING {len(candidate_trajectories)} CANDIDATES')
                         log.info("-----------------------")
-                        savepath = os.path.join(self.dh.db_dir, 'candidates')
-                        os.makedirs(savepath, exist_ok=True)
+                        savepath = self.dh.candidate_dir
                         for matched_observations in candidate_trajectories:
                             ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])                    
                             picklename = str(ref_dt.timestamp()) + '.pickle'
                             savePickle(matched_observations, savepath, picklename)
-
+                        # and we don't really want to do this, but might need to due to rechecking existing traj
+                        self.dh.saveDatabase()
                         return
 
                 ### ###
@@ -1559,7 +1564,7 @@ class TrajectoryCorrelator(object):
                 log.info("-----------------------")
                 log.info('LOADING CANDIDATES')
                 log.info("-----------------------")
-                savepath = os.path.join(self.dh.db_dir, 'candidates')
+                savepath = self.dh.candidate_dir
                 for fil in os.listdir(savepath):
                     if '.pickle' not in fil: 
                         continue
@@ -1567,13 +1572,12 @@ class TrajectoryCorrelator(object):
                     candidate_trajectories.append(loadedpickle)
                     # move the loaded file so we don't try to reprocess it on a subsequent pass
                     procpath = os.path.join(savepath, 'processed')  
-                    os.makedirs(procpath, exist_ok=True)
                     procfile = os.path.join(procpath, fil)
                     if os.path.isfile(procfile):
                         os.remove(procfile)
                     os.rename(os.path.join(savepath, fil), procfile)
                 log.info("-----------------------")
-                log.info('LOADED {} TRAJECTORIES'.format(len(candidate_trajectories)))
+                log.info('LOADED {} CANDIDATES'.format(len(candidate_trajectories)))
                 log.info("-----------------------")
 
             log.info("")
@@ -1640,7 +1644,6 @@ class TrajectoryCorrelator(object):
                     # Sort observations by station code
                     matched_observations = sorted(matched_observations, key=lambda x: str(x[1].station_code))
 
-                    # TODO: work out better algorithm here
                     if len(matched_observations) > self.traj_constraints.max_stations:
                         log.info('Selecting best {} stations'.format(self.traj_constraints.max_stations))
 
@@ -1654,7 +1657,7 @@ class TrajectoryCorrelator(object):
                     log.info("Observations:")
                     for entry in matched_observations:
                         obs, met_obs, _ = entry
-                        log.info(f'{met_obs.station_code} - {met_obs.mean_dt} - {obs.ignore_station}')
+                        log.info(f'{met_obs.obs_id} - {obs.ignore_station}')
 
 
 
@@ -1702,7 +1705,7 @@ class TrajectoryCorrelator(object):
                         # Normalize the observations to the reference Julian date
                         jdt_ref_curr = datetime2JD(met_obs.reference_dt)
                         obs_temp.time_data += (jdt_ref_curr - jdt_ref)*86400
-
+                        obs_temp.obs_id = met_obs.obs_id
                         traj.infillWithObs(obs_temp)
 
                     ### Recompute the reference JD and all times so that the first time starts at 0 ###
@@ -1768,6 +1771,8 @@ class TrajectoryCorrelator(object):
 
             # Finish the correlation run (update the database with new values)
             self.dh.saveDatabase()
+            if self.dh.mc_mode != 2:
+                self.dh.saveObservationsDatabase()
             log.info(f'SOLVED {sum(outcomes)} TRAJECTORIES')
 
             log.info("")
