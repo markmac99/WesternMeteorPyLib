@@ -36,6 +36,7 @@ OUTPUT_TRAJ_DIR = "trajectories"
 
 # Name of json file with the list of processed directories
 JSON_DB_NAME = "processed_trajectories.json"
+OBSERVATIONS_DB_NAME = 'processed_observations.json'
 
 # Auto run frequency (hours)
 AUTO_RUN_FREQUENCY = 6
@@ -134,10 +135,118 @@ class TrajectoryReduced(object):
             if hasattr(traj, 'traj_id'):
                 self.traj_id = traj.traj_id
 
+            self.obs_ids=[]
+            for obs in traj.observations:
+                if hasattr(obs, 'obs_id'):
+                    self.obs_ids.append(obs.obs_id)
+                else:
+                    #checksum = int(np.sum([entry.x for entry in obs.data]) % 10000)
+                    checksum = 0
+                    mean_dt = jd2Date(obs.jdt_ref, dt_obj=True) + datetime.timedelta(seconds=np.mean(obs.time_data))
+                    id = "{:s}_{:s}_{:04d}".format(obs.station_id, mean_dt.strftime("%Y%m%d-%H%M%S.%f"), checksum)
+                    self.obs_ids.append(id)
+
         # Load values from a dictionary
         else:
             self.__dict__ = json_dict
 
+
+class ObsDatabaseJSON(object):
+    def __init__(self, db_file_path, verbose=False):
+
+        self.db_file_path = db_file_path
+
+        # List of processed directories (keys are station codes, values are relative paths to night 
+        #   directories)
+        self.processed_dirs = {}
+
+        # List of paired observations as a part of a trajectory (keys are station codes, values are unique 
+        #   observation IDs)
+        self.paired_obs = {}
+
+        # Load the database from a JSON file
+        self.load(verbose=verbose)
+
+
+    def load(self, verbose=False):
+        """ Load the database from a JSON file or redis. """
+
+        # location of last backup of the database, in case we need to use it
+        db_bak_file_path = self.db_file_path + ".bak"
+
+        if os.path.exists(self.db_file_path):
+            db_file_path_saved = self.db_file_path
+
+            # Load the value from the database
+            # if there's a problem with the file, try using the last backup
+            try:
+                self.__dict__ = json.load(open(self.db_file_path))
+
+            except Exception:
+                log.warning('observations database damaged, trying backup')
+
+                try:
+                    if os.path.exists(db_bak_file_path):
+                        shutil.copy2(db_bak_file_path, self.db_file_path)
+                        self.__dict__ = json.load(open(self.db_file_path))
+
+                except Exception:
+                    log.warning('unable to find a useable observations database')
+
+            # Overwrite the database path with the saved one
+            self.db_file_path = db_file_path_saved
+
+            # do this here because the object dict is overwritten during the load operation above
+            self.verbose = verbose
+
+
+    def save(self):
+        """ Save the database of processed observations and folders to disk. """
+
+        # Back up the existing data base
+        db_bak_file_path = self.db_file_path + ".bak"
+        if os.path.exists(self.db_file_path):
+            shutil.copy2(self.db_file_path, db_bak_file_path)
+
+        # Save the data base
+        try:
+            with open(self.db_file_path, 'w') as f:
+                f.write(json.dumps(self, default=lambda o: o.__dict__, indent=4, sort_keys=True))
+
+            # Remove the backup file
+            if os.path.exists(db_bak_file_path):
+                os.remove(db_bak_file_path)
+
+        except Exception as e:
+            log.warning('unable to save the database, likely corrupt data')
+            shutil.copy2(db_bak_file_path, self.db_file_path)
+            log.warning(e)
+
+    def addProcessedDir(self, station_name, rel_proc_path):
+        """ Add the processed directory to the list. """
+
+        if station_name in self.processed_dirs:
+            if rel_proc_path not in self.processed_dirs[station_name]:
+                self.processed_dirs[station_name].append(rel_proc_path)
+
+
+    def addPairedObservation(self, met_obs):
+        """ Mark the given meteor observation as paired in a trajectory. """
+
+        if met_obs.station_code not in self.paired_obs:
+            self.paired_obs[met_obs.station_code] = []
+
+        if met_obs.obs_id not in self.paired_obs[met_obs.station_code]:
+            self.paired_obs[met_obs.station_code].append(met_obs.obs_id)
+
+    def checkObsIfPaired(self, met_obs):
+        """ Check if the given observation has been paired to a trajectory or not. """
+
+        if met_obs.station_code in self.paired_obs:
+            return (met_obs.obs_id in self.paired_obs[met_obs.station_code])
+
+        else:
+            return False
 
 
 class DatabaseJSON(object):
@@ -235,6 +344,12 @@ class DatabaseJSON(object):
                 if hasattr(self2, 'phase1Trajectories'):
                     delattr(self2, 'phase1Trajectories')
 
+                # remove the unused members from this class
+                if hasattr(self2, 'paired_obs'):
+                    del (self2.paired_obs)
+                if hasattr(self2, 'processed_dirs'):
+                    del (self2.processed_dirs)
+
                 f.write(json.dumps(self2, default=lambda o: o.__dict__, indent=4, sort_keys=True))
 
             # Remove the backup file
@@ -245,33 +360,6 @@ class DatabaseJSON(object):
             log.warning('unable to save the database, likely corrupt data')
             shutil.copy2(db_bak_file_path, self.db_file_path)
             log.warning(e)
-
-    def addProcessedDir(self, station_name, rel_proc_path):
-        """ Add the processed directory to the list. """
-
-        if station_name in self.processed_dirs:
-            if rel_proc_path not in self.processed_dirs[station_name]:
-                self.processed_dirs[station_name].append(rel_proc_path)
-
-
-    def addPairedObservation(self, met_obs):
-        """ Mark the given meteor observation as paired in a trajectory. """
-
-        if met_obs.station_code not in self.paired_obs:
-            self.paired_obs[met_obs.station_code] = []
-
-        if met_obs.id not in self.paired_obs[met_obs.station_code]:
-            self.paired_obs[met_obs.station_code].append(met_obs.id)
-
-
-    def checkObsIfPaired(self, met_obs):
-        """ Check if the given observation has been paired to a trajectory or not. """
-
-        if met_obs.station_code in self.paired_obs:
-            return (met_obs.id in self.paired_obs[met_obs.station_code])
-
-        else:
-            return False
 
 
     def checkTrajIfFailed(self, traj):
@@ -499,7 +587,7 @@ class MeteorObsRMS(object):
         # Generate a unique observation ID, the format is: STATIONID_YYYYMMDD-HHMMSS.us_CHECKSUM
         #  where CHECKSUM is the last four digits of the sum of all observation image X cordinates
         checksum = int(np.sum([entry.x for entry in self.data]) % 10000)
-        self.id = "{:s}_{:s}_{:04d}".format(self.station_code, self.mean_dt.strftime("%Y%m%d-%H%M%S.%f"), 
+        self.obs_id = "{:s}_{:s}_{:04d}".format(self.station_code, self.mean_dt.strftime("%Y%m%d-%H%M%S.%f"), 
             checksum)
 
 
@@ -513,7 +601,7 @@ class PlateparDummy:
 
 
 class RMSDataHandle(object):
-    def __init__(self, dir_path, dt_range=None, db_dir=None, output_dir=None, mcmode=0, max_trajs=1000, remotehost=None, verbose=False):
+    def __init__(self, dir_path, dt_range=None, db_dir=None, output_dir=None, mcmode=0, max_trajs=1000, remotehost=None, verbose=False, candmode=0):
         """ Handles data interfacing between the trajectory correlator and RMS data files on disk. 
     
         Arguments:
@@ -530,6 +618,7 @@ class RMSDataHandle(object):
         """
 
         self.mc_mode = mcmode
+        self.cand_mode = candmode
 
         self.dir_path = dir_path
 
@@ -559,8 +648,13 @@ class RMSDataHandle(object):
         if self.mc_mode > 0:
             self.phase1_dir = os.path.join(self.output_dir, 'phase1')
             mkdirP(os.path.join(self.phase1_dir, 'processed'))
-            self.purgePhase1ProcessedData(os.path.join(self.phase1_dir, 'processed'))
+            self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'))
 
+        # create the directory for phase1 simple trajectories, if needed
+        if self.cand_mode > 0:
+            self.candidate_dir = os.path.join(self.output_dir, 'candidates')
+            mkdirP(os.path.join(self.candidate_dir, 'processed'))
+            self.purgeProcessedData(os.path.join(self.candidate_dir, 'processed'), 10)
         self.remotehost = remotehost
 
         self.verbose = verbose
@@ -569,17 +663,25 @@ class RMSDataHandle(object):
 
         # Load database of processed folders
         database_path = os.path.join(self.db_dir, JSON_DB_NAME)
+        observation_db_path = os.path.join(self.db_dir, OBSERVATIONS_DB_NAME)
         log.info("")
         # move any remotely calculated pickles to their target locations
         if os.path.isdir(os.path.join(self.output_dir, 'remoteuploads')):
             moveRemoteTrajectories(self.output_dir)
 
-        if mcmode != 2:
-            log.info("Loading database: {:s}".format(database_path))
+        if self.mc_mode != 2:
+            log.info("Loading observations database: {:s}".format(database_path))
+            self.obsdb = ObsDatabaseJSON(observation_db_path, verbose=self.verbose)
+
+            log.info("Loading trajectory database: {:s}".format(database_path))
             self.db = DatabaseJSON(database_path, verbose=self.verbose)
+
+            # if reading older DB with processed_dirs and paired_obs, move these into the observations db
+            self.moveObservationsToObsDb()
+
             log.info('Archiving older entries....')
             try:
-                self.archiveOldRecords(older_than=3)
+                self.archiveOldRecords(older_than=3, candmode=self.cand_mode)
             except: 
                 pass
             log.info("   ... done!")
@@ -627,14 +729,39 @@ class RMSDataHandle(object):
         ### ###
 
 
-    def purgePhase1ProcessedData(self, dir_path):
-        refdt = time.time() - 90 * 86400
+    def purgeProcessedData(self, dir_path, max_days=90):
+        refdt = time.time() - max_days * 86400
         result=[os.remove(file) for file in (os.path.join(path, file)
                     for path, _, files in os.walk(dir_path) for file in files) if os.stat(file).st_mtime < refdt]
         return result
+    
+
+    def moveObservationsToObsDb(self):
+        """
+        Move any paired_obs and processed_dirs records to the observations database
+
+        """
+
+        class DummyMetObs():
+            def __init__(self, station, obs_id):
+                self.station_code = station
+                self.obs_id = obs_id
+
+        if hasattr(self.db, 'processed_dirs'):
+            for station in self.db.processed_dirs:
+                for dirname in self.db.processed_dirs[station]:
+                    self.obsdb.addProcessedDir(station, dirname)
+                    self.db.processed_dirs[station].remove(dirname)
+
+        if hasattr(self.db, 'paired_obs'):
+            for station in self.db.paired_obs:
+                for obs_id in self.db.paired_obs[station]:
+                    self.obsdb.addPairedObservation(DummyMetObs(station, obs_id))
+                    self.db.paired_obs[station].remove(obs_id)
+        return 
 
 
-    def archiveOldRecords(self, older_than=3):
+    def archiveOldRecords(self, older_than=3, candmode=0):
         """
         Archive off old records to keep the database size down
 
@@ -644,7 +771,7 @@ class RMSDataHandle(object):
         class DummyMetObs():
             def __init__(self, station, obs_id):
                 self.station_code = station
-                self.id = obs_id
+                self.obs_id = obs_id
 
         archdate = datetime.datetime.now(datetime.timezone.utc) - relativedelta(months=older_than)
         archdate_jd = datetime2JD(archdate)
@@ -663,22 +790,26 @@ class RMSDataHandle(object):
                 archdb.addTrajectory(None, self.db.failed_trajectories[traj], True)
                 self.db.removeTrajectory(self.db.failed_trajectories[traj], keepFolder=True)
 
-        for station in self.db.processed_dirs:
-            arch_processed = [dirname for dirname in self.db.processed_dirs[station] if 
+        for station in self.obsdb.processed_dirs:
+            arch_processed = [dirname for dirname in self.obsdb.processed_dirs[station] if 
                                 datetime.datetime.strptime(dirname[14:22], '%Y%m%d').replace(tzinfo=datetime.timezone.utc) < archdate]
             for dirname in arch_processed:
                 archdb.addProcessedDir(station, dirname)
-                self.db.processed_dirs[station].remove(dirname)
+                self.obsdb.processed_dirs[station].remove(dirname)
 
-        for station in self.db.paired_obs:
-            arch_processed = [obs_id for obs_id in self.db.paired_obs[station] if 
+        for station in self.obsdb.paired_obs:
+            arch_processed = [obs_id for obs_id in self.obsdb.paired_obs[station] if 
                                 datetime.datetime.strptime(obs_id[7:15], '%Y%m%d').replace(tzinfo=datetime.timezone.utc) < archdate]
             for obs_id in arch_processed:
                 archdb.addPairedObservation(DummyMetObs(station, obs_id))
-                self.db.paired_obs[station].remove(obs_id)
+                self.obsdb.paired_obs[station].remove(obs_id)
 
         archdb.save()
-        self.db.save()
+        # don't save the original DBs if we're in candidate-finding mode. 
+        # otherwise we have concurrency issues with the JSON file
+        if candmode !=1:
+            self.db.save()
+            self.obsdb.save()
         return 
 
     def loadStations(self):
@@ -700,9 +831,18 @@ class RMSDataHandle(object):
         return station_list
 
 
+    def findUnpairedObservations(self, station_list):
+        # TODO: implement this!
+        return
+
 
     def findUnprocessedFolders(self, station_list):
         """ Go through directories and find folders with unprocessed data. """
+        """ 
+        this function is misnamed - in fact it adds every folder that matches the required pattern
+        whether or not its already been processed. This ensures that we pick up changed data. 
+        This is ok because later on we filter by night_dt, which is the folder timestamp
+        """
 
         processing_list = []
 
@@ -714,8 +854,8 @@ class RMSDataHandle(object):
             station_path = os.path.join(self.dir_path, station_name)
 
             # Add the station name to the database if it doesn't exist
-            if station_name not in self.db.processed_dirs:
-                self.db.processed_dirs[station_name] = []
+            if station_name not in self.obsdb.processed_dirs:
+                self.obsdb.processed_dirs[station_name] = []
 
             # Go through all directories in stations
             for night_name in os.listdir(station_path):
@@ -736,18 +876,7 @@ class RMSDataHandle(object):
                 night_path = os.path.join(station_path, night_name)
                 night_path_rel = os.path.join(station_name, night_name)
 
-                # # If the night path is not in the processed list, add it to the processing list
-                # if night_path_rel not in self.db.processed_dirs[station_name]:
-                #     processing_list.append([station_name, night_path_rel, night_path, night_dt])
-
                 processing_list.append([station_name, night_path_rel, night_path, night_dt])
-
-                # else:
-                #     skipped_dirs += 1
-
-
-        # if skipped_dirs:
-        #     log.info("Skipped {:d} processed directories".format(skipped_dirs))
 
         return processing_list
 
@@ -830,17 +959,13 @@ class RMSDataHandle(object):
                 log.info("  Skipping {:s} due to missing data files...".format(rel_proc_path))
 
                 # Add the folder to the list of processed folders
-                self.db.addProcessedDir(station_code, rel_proc_path)
+                self.obsdb.addProcessedDir(station_code, rel_proc_path)
 
                 continue
 
             if station_code != prev_station:
                 station_count += 1
                 prev_station = station_code
-
-            # Save database to mark those with missing data files (only every 250th station, to speed things up)
-            if (station_count % 250 == 0) and (station_code != prev_station):
-                self.saveDatabase()
 
 
             # Load platepars
@@ -900,9 +1025,9 @@ class RMSDataHandle(object):
                     continue
 
                 # Add only unpaired observations
-                if not self.db.checkObsIfPaired(met_obs):
+                if not self.obsdb.checkObsIfPaired(met_obs):
 
-                    # print(" ", station_code, met_obs.reference_dt, rel_proc_path)
+                    #print(" ", station_code, met_obs.obs_id, rel_proc_path)
                     added_count += 1
 
                     unpaired_met_obs_list.append(met_obs)
@@ -912,7 +1037,6 @@ class RMSDataHandle(object):
 
         log.info("")
         log.info("  Finished loading unpaired observations!")
-        self.saveDatabase()
 
         return unpaired_met_obs_list
     
@@ -1432,7 +1556,7 @@ class RMSDataHandle(object):
 
         if self.db is None:
             return 
-        self.db.addProcessedDir(met_obs.station_code, met_obs.rel_proc_path)
+        self.obsdb.addProcessedDir(met_obs.station_code, met_obs.rel_proc_path)
 
 
 
@@ -1441,7 +1565,7 @@ class RMSDataHandle(object):
 
         if self.db is None:
             return 
-        self.db.addPairedObservation(met_obs)
+        self.obsdb.addPairedObservation(met_obs)
 
 
 
@@ -1473,7 +1597,7 @@ class RMSDataHandle(object):
     def removeTrajectory(self, traj_reduced):
         """ Remove the trajectory from the data base and disk. """
 
-        # in mcmode 2 the database isn't loaded but we still need to delete updated trajectories
+        # in mc_mode 2 the database isn't loaded but we still need to delete updated trajectories
         if self.mc_mode == 2: 
             if os.path.isfile(traj_reduced.traj_file_path):
                 traj_dir = os.path.dirname(traj_reduced.traj_file_path)
@@ -1651,6 +1775,27 @@ class RMSDataHandle(object):
         signal.signal(signal.SIGINT, original_signal)
 
         
+    def saveObservationsDatabase(self):
+        """ Save the data base. """
+
+        def _breakHandler(signum, frame):
+            """ Do nothing if CTRL + C is pressed. """
+            log.info("The data base is being saved, the program cannot be exited right now!")
+            pass
+
+        if self.db is None:
+            return 
+        # Prevent quitting while a data base is being saved
+        original_signal = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _breakHandler)
+
+        # Save the data base
+        log.info("Saving observations database to disk...")
+        self.obsdb.save()
+
+        # Restore the signal functionality
+        signal.signal(signal.SIGINT, original_signal)
+
 
 
 
@@ -1861,13 +2006,13 @@ contain data folders. Data folders should have FTPdetectinfo files together with
         max_trajs = int(cml_args.maxtrajs)
         
     if cml_args.candidatemode == 1:
-        log.info('Running in find-candidates mode')
+        log.info('Running in find-candidates mode, ignoring mcmode')
     elif cml_args.candidatemode == 2:
         log.info('Running in process-candidates mode')
-    
-    if cml_args.candidatemode == 2 and cml_args.mcmode ==2:
-        log.info('both candidatemode and mcmode cannot be 2, setting mcmode to 0')
-        cml_args.mcmode = 0
+        if cml_args.mcmode > 1:
+            log.info('candidatemode not applicable in mcmode 2, resetting to 0')
+            cml_args.candidatemode = 0
+   
 
     if cml_args.mcmode == 2:
         log.info(f'Reloading at most {max_trajs} phase1 trajectories.')
@@ -1937,7 +2082,8 @@ contain data folders. Data folders should have FTPdetectinfo files together with
         dh = RMSDataHandle(
             cml_args.dir_path, dt_range=event_time_range, 
             db_dir=cml_args.dbdir, output_dir=cml_args.outdir,
-            mcmode=cml_args.mcmode, max_trajs=max_trajs, remotehost=remotehost, verbose=cml_args.verbose)
+            mcmode=cml_args.mcmode, max_trajs=max_trajs, remotehost=remotehost, verbose=cml_args.verbose,
+            candmode=cml_args.candidatemode)
         
         # If there is nothing to process, stop, unless we're in mcmode 2 (processing_list is not used in this case)
         if not dh.processing_list and cml_args.mcmode < 2 and cml_args.candidatemode < 2:
@@ -1950,7 +2096,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
             ### GENERATE DAILY TIME BINS ###
 
-            if cml_args.mcmode != 2:
+            if dh.mc_mode != 2:
                 # Find the range of datetimes of all folders (take only those after the year 2000)
                 proc_dir_dts = [entry[3] for entry in dh.processing_list if entry[3] is not None]
                 proc_dir_dts = [dt for dt in proc_dir_dts if dt > datetime.datetime(2000, 1, 1, 0, 0, 0, 
@@ -2007,20 +2153,20 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                     log.info("")
 
                     # Load data of unprocessed observations
-                    if cml_args.mcmode != 2:
+                    if dh.mc_mode != 2:
                         dh.unpaired_observations = dh.loadUnpairedObservations(dh.processing_list, 
                             dt_range=(bin_beg, bin_end))
 
                     # refresh list of calculated trajectories from disk
                     dh.removeDeletedTrajectories()
                     dh.loadComputedTrajectories(os.path.join(dh.output_dir, OUTPUT_TRAJ_DIR), dt_range=[bin_beg, bin_end])
-                    if cml_args.mcmode != 2:
+                    if dh.mc_mode != 2:
                         dh.removeDuplicateTrajectories(dt_range=[bin_beg, bin_end])
 
                     # Run the trajectory correlator
                     tc = TrajectoryCorrelator(dh, trajectory_constraints, cml_args.velpart, data_in_j2000=True, enableOSM=cml_args.enableOSM)
                     bin_time_range = [bin_beg, bin_end]
-                    tc.run(event_time_range=event_time_range, mcmode=cml_args.mcmode, bin_time_range=bin_time_range, candmode=cml_args.candidatemode)
+                    tc.run(event_time_range=event_time_range, bin_time_range=bin_time_range, mcmode=dh.mc_mode, candmode=dh.cand_mode)
             else:
                 # there were no datasets to process
                 log.info('no data to process yet')
