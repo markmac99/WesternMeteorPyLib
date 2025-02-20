@@ -630,7 +630,7 @@ class TrajectoryCorrelator(object):
         jdt_ref = traj.jdt_ref
         saved_traj_id = traj.traj_id
         log.info("")
-        log.info(f"Solving the trajectory at {jd2Date(jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc).strftime('%Y-%m-%dZ%H:%M:%S.%f')}...")
+        log.info(f"Solving the trajectory {saved_traj_id}...")
 
         # make a note of how many observations are already marked ignored.
         initial_ignore_count = len([obs for obs in traj.observations if obs.ignore_station])
@@ -1200,8 +1200,9 @@ class TrajectoryCorrelator(object):
 
 
                         log.info("")
-                        log.info("Checking trajectory at {:s} in countries: {:s}".format( 
-                            str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)), 
+                        log.info("Checking trajectory {:s} in countries: {:s}".format( 
+                            #str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)), 
+                            traj_reduced.traj_id,
                             ", ".join(list(set([stat_id[:2] for stat_id in traj_reduced.participating_stations])))))
                         log.info("--------")
 
@@ -1281,7 +1282,7 @@ class TrajectoryCorrelator(object):
 
                             # Add new observations to the trajectory object
                             for obs_new, tmp_obs in candidate_observations:
-                                #log.info(f'{obs_new.station_id} {obs_new.obs_id}')
+                                log.info(f'{obs_new.station_id} {tmp_obs.obs_id}')
                                 obs_new.obs_id = tmp_obs.obs_id
                                 traj_full.infillWithObs(obs_new)
 
