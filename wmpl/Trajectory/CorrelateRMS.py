@@ -440,7 +440,7 @@ class DatabaseJSON(object):
 
 
 
-    def removeTrajectory(self, traj_reduced, keepFolder=False):
+    def removeTrajectory(self, traj_reduced, keepFolder=False, phase1_dir=None):
         """ Remove the trajectory from the data base and disk. """
 
         # Remove the trajectory data base entry
@@ -453,6 +453,17 @@ class DatabaseJSON(object):
             shutil.rmtree(traj_dir, ignore_errors=True)
             if os.path.isfile(traj_reduced.traj_file_path):
                 log.info(f'unable to remove {traj_dir}')
+
+        # and check the phase1 folder too
+        if phase1_dir:
+            traj_path = os.path.split(traj_reduced.traj_file_path)[0]
+            traj_name = f'{os.path.split(traj_path)[1]}_trajectory.pickle'
+            phase1_traj_file = os.path.join(phase1_dir, traj_name)
+            log.info(f'checking phase1 dir {phase1_traj_file}')
+            if not keepFolder and os.path.isfile(phase1_traj_file):
+                os.remove(phase1_traj_file)
+                if os.path.isfile(phase1_traj_file):
+                    log.info(f'unable to remove {phase1_traj_file}')
 
 
 
@@ -645,12 +656,14 @@ class RMSDataHandle(object):
         mkdirP(self.output_dir)
 
         # create the directory for phase1 simple trajectories, if needed
+        self.phase1_dir = None
         if self.mc_mode > 0:
             self.phase1_dir = os.path.join(self.output_dir, 'phase1')
             mkdirP(os.path.join(self.phase1_dir, 'processed'))
             self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'))
 
         # create the directory for phase1 simple trajectories, if needed
+        self.candidate_dir = None
         if self.cand_mode > 0:
             self.candidate_dir = os.path.join(self.output_dir, 'candidates')
             mkdirP(os.path.join(self.candidate_dir, 'processed'))
@@ -1617,7 +1630,7 @@ class RMSDataHandle(object):
             self.cleanupPhase2TempPickle(traj_reduced, True)
 
             return 
-        self.db.removeTrajectory(traj_reduced)
+        self.db.removeTrajectory(traj_reduced, phase1_dir=self.phase1_dir)
 
 
     def cleanupPhase2TempPickle(self, traj, success=False):
