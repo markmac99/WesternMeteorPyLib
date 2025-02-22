@@ -1544,8 +1544,12 @@ class TrajectoryCorrelator(object):
                         log.info("-----------------------")
                         savepath = self.dh.candidate_dir
                         for matched_observations in candidate_trajectories:
-                            ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])                    
-                            picklename = str(ref_dt.timestamp()) + '.pickle'
+                            ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations]).strftime('%Y%m%d_%H%M%S_%f')
+                            station_list = [met_obs.station_code for _, met_obs, _ in matched_observations]
+                            ctry_list = list(set([stat_id[:2] for stat_id in station_list]))
+                            ctry_list.sort()
+                            ctry_list = '_'.join(ctry_list)
+                            picklename = f'{ref_dt}_{ctry_list}.pickle'
                             savePickle(matched_observations, savepath, picklename)
                         # and we don't really want to do this, but might need to due to rechecking existing traj
                         self.dh.saveDatabase()
