@@ -77,13 +77,12 @@ class ObservationDatabase():
     def closeObsDatabase(self):
         # close the database, making sure we commit any pending updates
 
-        self.dbhandle.commit()
+        self.commitObsDatabase()
         self.dbhandle.close()
         self.dbhandle = None
         return 
 
-
-    def checkObsPaired(self, station_code, obs_id, verbose=False):
+    def checkObsPaired(self, obs_id, verbose=False):
         # return True if there is an observation with the correct station code, obs id and with status = 1 
         
         paired = True
@@ -94,45 +93,33 @@ class ObservationDatabase():
             log.info(f'{obs_id} is {"Paired" if paired else "Unpaired"}')
         return paired 
 
-
     def addPairedObs(self, station_code, obs_id, obs_date, verbose=False):
         # add or update an entry in the database, setting status = 1
-
-        # Note that we do not commit the database as this would cause problems if we have to 
-        # stop and restart processing mid-way through a pairing run. By leaving the data uncommitted
-        # we ensure that if the process crashes, then data will be left unpaired and we can rerun the 
-        # pairing routine safely. 
 
         if verbose:
             log.info(f'adding {obs_id} to paired_obs table')
         sqlstr = f"insert or replace into paired_obs values ('{station_code}','{obs_id}', {datetime2JD(obs_date)}, 1)"
-        self.dbhandle.execute(sqlstr)
-
-        if not self.checkObsPaired(station_code, obs_id):
+        try:
+            self.dbhandle.execute(sqlstr)
+            self.dbhandle.commit()
+            return True
+        except Exception:
             log.warning(f'failed to add {obs_id} to paired_obs table')
-            return False
-        return True
-
+            return False            
 
     def unpairObs(self, met_obs_list, verbose=True):
         # if an entry exists, update the status to 0. 
-        # this allows us to mark an observation paired during candidate creation, then unpair it later if the solution fails
-        # or we want to force a rerun. 
         obs_ids_str = ','.join([f"'{met_obs.id}'" for met_obs in met_obs_list])
 
         if verbose:
             log.info(f'unpairing {obs_ids_str}')
-        self.dbhandle.execute(f"delete from paired_obs where obs_id in ({obs_ids_str})")
-        data = []
-        for met_obs in met_obs_list:
-            data.append(f"('{met_obs.station_code}','{met_obs.id}', {datetime2JD(met_obs.mean_dt)}, 0)")
-        data_str = ','.join(data)
-        sqlstr = f"insert or replace into paired_obs values {data_str}"
-        self.dbhandle.execute(sqlstr)
-
-        self.dbhandle.commit()
-        return True
-
+        try:
+            self.dbhandle.execute(f"update paired_obs set status = 0 where obs_id in ({obs_ids_str})")
+            self.dbhandle.commit()
+            return True
+        except Exception:
+            log.warning(f'failed to unpair {obs_ids_str}')
+            return False            
 
     def archiveObsDatabase(self, db_path, arch_prefix, archdate_jd):
         # archive records older than archdate_jd to a database {arch_prefix}_observations.db
@@ -190,7 +177,6 @@ class ObservationDatabase():
         self.dbhandle.commit()
         log.info(f'done - moved {i} observations')
         log.info('-----------------------------')
-
         return 
 
     def mergeObsDatabase(self, source_db_path):

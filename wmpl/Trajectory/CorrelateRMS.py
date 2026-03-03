@@ -548,11 +548,15 @@ class RMSDataHandle(object):
             # no need to load the legacy JSON file if we already have the sqlite databases
             if not os.path.isfile(os.path.join(db_dir, 'observations.db')) and \
                not os.path.isfile(os.path.join(db_dir, 'trajectories.db')):
-                log.info("Loading database: {:s}".format(database_path))
+                log.info("Loading old JSON database: {:s}".format(database_path))
                 self.old_db = DatabaseJSON(database_path, verbose=self.verbose)
             else:
                 self.old_db = None
 
+            # REVISIT THIS LATER
+            #if mcmode == MCMODE_PHASE1 and self.checkRemoteDataMode() == 'master':
+            #    self.observations_db = ObservationDatabase(self.phase1_dir, 'phase1_paired.db')
+            #else:
             self.observations_db = ObservationDatabase(db_dir)
             if hasattr(self.old_db, 'paired_obs'):
                 # move any legacy paired obs data into sqlite
@@ -583,6 +587,11 @@ class RMSDataHandle(object):
 
             # in phase 1, initialise and collect data second as we load candidates dynamically
             self.initialiseRemoteDataHandling()
+
+            # in phase1, if we're the master node, write observations updates to a temp database
+            if self.RemoteDatahandler and self.RemoteDatahandler.mode == 'master' and mcmode == MCMODE_PHASE1:
+                self.observations_db.closeObsDatabase()
+                self.observations_db = ObservationDatabase(self.phase1_dir)
 
         else:
             # in phase 2, initialise and collect data first as we need the phase1 traj on disk already
@@ -615,6 +624,15 @@ class RMSDataHandle(object):
             australia_group]
 
         ### ###
+
+    def checkRemoteDataMode(self):
+        remote_cfg = os.path.join(self.db_dir, 'wmpl_remote.cfg')
+        if os.path.isfile(remote_cfg):
+            self.RemoteDatahandler = RemoteDataHandler(remote_cfg)
+            return self.RemoteDatahandler.mode
+        else:
+            return 'none'
+
 
     def initialiseRemoteDataHandling(self):
         # Initialise remote data handling, if the config file is present
@@ -882,7 +900,7 @@ class RMSDataHandle(object):
                     continue
 
                 # Add only unpaired observations
-                if not self.observations_db.checkObsPaired(met_obs.station_code, met_obs.id):
+                if not self.observations_db.checkObsPaired(met_obs.id, verbose=verbose):
                     # print(" ", station_code, met_obs.reference_dt, rel_proc_path)
                     added_count += 1
                     unpaired_met_obs_list.append(met_obs)
@@ -1170,7 +1188,7 @@ class RMSDataHandle(object):
         # Go through all meteors from other stations
         for met_obs2 in unpaired_observations:
 
-            if self.observations_db.checkObsPaired(met_obs2.station_code, met_obs2.id, verbose=verbose):
+            if self.observations_db.checkObsPaired(met_obs2.id, verbose=verbose):
                 continue
 
             # Take only observations from different stations
@@ -1353,7 +1371,7 @@ class RMSDataHandle(object):
 
         self.traj_db.removeTrajectory(traj_reduced)
 
-    def excludeAlreadyFailedCandidates(self, matched_observations, remaining_unpaired, verbose=False):
+    def excludeAlreadyFailedCandidates(self, matched_observations, num_obs_paired, verbose=False):
 
         # go through the candidates and check if they correspond to already-failed
         candidate_trajectories=[]
@@ -1384,12 +1402,11 @@ class RMSDataHandle(object):
 
             if self.checkTrajIfFailed(traj):
                 log.info(f'Candidate at {ref_dt.isoformat()} already failed, skipping')
-                self.dh.observations_db.unpairObs([obs[1] for obs in cand], verbose=verbose)
-                remaining_unpaired -= len(cand)
+                num_obs_paired -= len(cand)
             else:
                 candidate_trajectories.append(cand)
     
-        return candidate_trajectories, max(0,remaining_unpaired)
+        return candidate_trajectories, num_obs_paired
 
     def checkTrajIfFailed(self, traj):
         """ Check if the given trajectory has been computed with the same observations and has failed to be
@@ -1588,7 +1605,8 @@ class RMSDataHandle(object):
             ctries = '_'.join(ctry_list)
             picklename = f'{ref_dt.timestamp():.6f}_{ctries}.pickle'
 
-            # this function can also save a candidate
+            if verbose:
+                log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
             self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose)
 
         log.info("-----------------------")
