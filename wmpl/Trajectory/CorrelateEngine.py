@@ -1460,7 +1460,7 @@ class TrajectoryCorrelator(object):
                         if met_obs.processed:
                             continue
 
-                        if self.dh.observations_db.checkObsPaired(met_obs.id, verbose=True):
+                        if self.dh.observations_db.checkObsPaired(met_obs.id, verbose=verbose):
                             continue
 
                         # Get station platepar
@@ -1567,9 +1567,6 @@ class TrajectoryCorrelator(object):
                         log.info("-----------------------")
 
                         self.dh.saveCandidates(candidate_trajectories, verbose=verbose)
-
-                        # now we've saved the candidates we can commit the changes
-                        self.dh.observations_db.commitObsDatabase()
                         
                         return len(candidate_trajectories)
                     
