@@ -1287,7 +1287,7 @@ class RMSDataHandle(object):
         log.info(f'saved {traj.traj_id} to {output_dir}')
 
         if self.mc_mode & MCMODE_PHASE1 and not self.mc_mode & MCMODE_PHASE2:
-            self.savePhase1Trajectory(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=verbose)
+            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=verbose)
             
         elif self.mc_mode & MCMODE_PHASE2:
             # the MC phase may alter the trajectory details and if later on 
@@ -1589,13 +1589,13 @@ class RMSDataHandle(object):
             picklename = f'{ref_dt.timestamp():.6f}_{ctries}.pickle'
 
             # this function can also save a candidate
-            self.savePhase1Trajectory(matched_observations, picklename, 'candidates', verbose=verbose)
+            self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose)
 
         log.info("-----------------------")
         log.info(f'Saved {len(candidate_trajectories)} candidates')
         log.info("-----------------------")
 
-    def savePhase1Trajectory(self, traj, file_name, savetype='phase1', verbose=False):
+    def saveCandOrTraj(self, traj, file_name, savetype='phase1', verbose=False):
         """
         in mcmode MCMODE_PHASE1 or MCMODE_SIMPLE , save the candidates or phase 1 trajectories
         and distribute as appropriate
