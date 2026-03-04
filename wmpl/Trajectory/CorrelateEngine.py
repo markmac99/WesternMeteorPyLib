@@ -1429,7 +1429,9 @@ class TrajectoryCorrelator(object):
 
                             # Re-run the trajectory fit
                             # pass in orig_traj here so that it can be deleted from disk if the new solution succeeds
-                            successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=mcmode, orig_traj=traj_reduced, verbose=verbose)
+                            # pass the new candidates in so that they can be marked paired if the new soln succeeds
+                            successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=mcmode, 
+                                                    matched_obs=candidate_observations, orig_traj=traj_reduced, verbose=verbose)
                             
                             # If the new trajectory solution succeeded, remove the now-paired observations from the in memory list
                             if successful_traj_fit:
@@ -1567,7 +1569,7 @@ class TrajectoryCorrelator(object):
                         log.info("-----------------------")
 
                         self.dh.saveCandidates(candidate_trajectories, verbose=verbose)
-                        
+
                         return len(candidate_trajectories)
                     
                     else:
