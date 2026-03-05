@@ -1048,7 +1048,7 @@ class TrajectoryCorrelator(object):
             if orig_traj:
                 log.info(f"Removing the previous solution {os.path.dirname(orig_traj.traj_file_path)} ...")
                 remove_phase1 = True if abs(round((traj.jdt_ref-orig_traj.jdt_ref)*86400000,0)) > 0 else False
-                self.dh.removeTrajectory(orig_traj, remove_phase1)
+                self.dh.removeTrajectory(orig_traj, remove_phase1=remove_phase1)
                 traj.pre_mc_longname = os.path.split(self.dh.generateTrajOutputDirectoryPath(orig_traj, make_dirs=False))[-1] 
 
             log.info('Saving trajectory....')
@@ -1060,14 +1060,16 @@ class TrajectoryCorrelator(object):
                 log.info('Updating database....')
                 self.dh.addTrajectory(traj)
                 if matched_obs is not None: 
-                    for _, obs, _ in matched_obs:
-                        self.dh.observations_db.addPairedObs(obs.station_code, obs.id, obs.mean_dt, verbose=verbose)
+                    if len(matched_obs[0])==3:
+                        for _, obs, _ in matched_obs:
+                            self.dh.observations_db.addPairedObs(obs.station_code, obs.id, obs.mean_dt, verbose=verbose)
+                    else:
+                        for _, obs in matched_obs:
+                            self.dh.observations_db.addPairedObs(obs.station_code, obs.id, obs.mean_dt, verbose=verbose)
 
 
         else:
             log.info('unable to fit trajectory')
-            # TODO add failed traj to database here ? 
-            # self.dh.addTrajectory(traj, blabla)
 
         return successful_traj_fit
 
@@ -1430,7 +1432,8 @@ class TrajectoryCorrelator(object):
                             # Re-run the trajectory fit
                             # pass in orig_traj here so that it can be deleted from disk if the new solution succeeds
                             # pass the new candidates in so that they can be marked paired if the new soln succeeds
-                            successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=mcmode, 
+                            # Note: mcmode must be phase1 here to force a recompute
+                            successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=MCMODE_PHASE1, 
                                                     matched_obs=candidate_observations, orig_traj=traj_reduced, verbose=verbose)
                             
                             # If the new trajectory solution succeeded, remove the now-paired observations from the in memory list
@@ -1744,8 +1747,11 @@ class TrajectoryCorrelator(object):
 
 
                     # Init the solver (use the earliest date as the reference)
-                    ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
-                    jdt_ref = datetime2JD(ref_dt)
+                    #ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
+                    #jdt_ref = datetime2JD(ref_dt)
+                    jdt_ref = min([obs_temp.jdt_ref for obs_temp, _, _ in matched_observations])
+
+                    log.info(f'ref_dt {jd2Date(jdt_ref, dt_obj=True)}')
                     traj = self.initTrajectory(jdt_ref, mc_runs, verbose=verbose)
 
 
@@ -1753,8 +1759,10 @@ class TrajectoryCorrelator(object):
                     for obs_temp, met_obs, _ in matched_observations:
 
                         # Normalize the observations to the reference Julian date
-                        jdt_ref_curr = datetime2JD(met_obs.reference_dt)
+                        jdt_ref_curr = obs_temp.jdt_ref # datetime2JD(met_obs.reference_dt)
                         obs_temp.time_data += (jdt_ref_curr - jdt_ref)*86400
+                        # we have normalised the time data to jdt_ref, now we need to reset jdt_ref for each obs too
+                        obs_temp.jdt_ref = jdt_ref 
 
                         traj.infillWithObs(obs_temp)
 
@@ -1766,16 +1774,17 @@ class TrajectoryCorrelator(object):
 
                     # If the first time is not 0, normalize times so that the earliest time is 0
                     if t0 != 0.0:
-
+                        log.info(f'adjusting by {t0}')
                         # Offset all times by t0
                         for i in range(len(traj.observations)):
                             traj.observations[i].time_data -= t0
-
+                            log.info(f'obs jdt_ref is {jd2Date(traj.observations[i].jdt_ref, dt_obj=True)}')
 
                         # Recompute the reference JD to corresponds with t0
                         traj.jdt_ref = traj.jdt_ref + t0/86400.0
 
 
+                    log.info(f'ref_dt {jd2Date(traj.jdt_ref, dt_obj=True)}')
                     # If this trajectory already failed to be computed, don't try to recompute it again unless
                     #   new observations are added
                     if self.dh.checkTrajIfFailed(traj):
