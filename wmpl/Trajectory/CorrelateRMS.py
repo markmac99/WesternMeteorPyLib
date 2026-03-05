@@ -1360,7 +1360,7 @@ class RMSDataHandle(object):
                     shutil.rmtree(traj_dir, ignore_errors=True)
             return
 
-        if self.mcmode & MCMODE_PHASE1 and remove_phase1:
+        if self.mc_mode & MCMODE_PHASE1 and remove_phase1:
             # remove any solution from the phase1 folder
             phase1_traj = os.path.join(self.phase1_dir, os.path.basename(traj_reduced.traj_file_path))
             if os.path.isfile(phase1_traj):
@@ -1386,6 +1386,7 @@ class RMSDataHandle(object):
                 # Normalize the observations to the reference Julian date
                 jdt_ref_curr = datetime2JD(met_obs.reference_dt)
                 obs_temp.time_data += (jdt_ref_curr - jdt_ref)*86400
+                obs_temp.jdt_ref = jdt_ref
 
                 traj.infillWithObs(obs_temp)
 
