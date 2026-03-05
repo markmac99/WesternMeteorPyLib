@@ -58,15 +58,18 @@ class ObservationDatabase():
         con = sqlite3.connect(db_full_name)
         con.execute('pragma journal_mode=wal')
         if purge_records:
+            log.info('purge: write to obsdb')
             con.execute('drop table paired_obs')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
+            log.info('create table: write to obsdb')
             con.execute("CREATE TABLE paired_obs(station_code VARCHAR(8), obs_id VARCHAR(36) UNIQUE, obs_date REAL, status INTEGER)")
         con.commit()
         return con
 
     def commitObsDatabase(self):
         # commit the obs db. This function exists so we can do lazy writes in some cases
+        log.info('commit: write to obsdb')
         self.dbhandle.commit()
         try:
             self.dbhandle.execute('pragma wal_checkpoint(TRUNCATE)')
@@ -100,6 +103,7 @@ class ObservationDatabase():
             log.info(f'adding {obs_id} to paired_obs table')
         sqlstr = f"insert or replace into paired_obs values ('{station_code}','{obs_id}', {datetime2JD(obs_date)}, 1)"
         try:
+            log.info('update: write to obsdb')
             self.dbhandle.execute(sqlstr)
             self.dbhandle.commit()
             return True
@@ -114,6 +118,7 @@ class ObservationDatabase():
         if verbose:
             log.info(f'unpairing {obs_ids_str}')
         try:
+            log.info('update: write to obsdb')
             self.dbhandle.execute(f"update paired_obs set status = 0 where obs_id in ({obs_ids_str})")
             self.dbhandle.commit()
             return True
@@ -145,6 +150,7 @@ class ObservationDatabase():
                 except Exception:
                     log.info(f'{row[1]} already exists in target')
 
+        log.info('delete: write to obsdb')
         self.dbhandle.execute(f'delete from paired_obs where obs_date < {archdate_jd}')
         self.dbhandle.commit()
         return 
@@ -193,6 +199,7 @@ class ObservationDatabase():
             status = True
         else:
             try:
+                log.info('insert: write to obsdb')
                 self.dbhandle.execute('insert or replace into paired_obs select * from sourcedb.paired_obs')
                 status = True
             except Exception as e:
@@ -233,11 +240,13 @@ class TrajectoryDatabase():
         log.info(f'opening database {db_full_name}')
         con = sqlite3.connect(db_full_name)
         if purge_records:
+            log.info('purge: write to trajdb')
             con.execute('drop table if exists trajectories')
             con.execute('drop table if exists failed_trajectories')
             con.commit()
         res = con.execute("SELECT name FROM sqlite_master WHERE name='trajectories'")
         if res.fetchone() is None:
+            log.info('create table: write to trajdb')
             con.execute("""CREATE TABLE trajectories(
                         jdt_ref REAL UNIQUE,
                         traj_id VARCHAR UNIQUE,
@@ -264,6 +273,7 @@ class TrajectoryDatabase():
         res = con.execute("SELECT name FROM sqlite_master WHERE name='failed_trajectories'")
         if res.fetchone() is None:
             # note: traj_id not unique here as some fails will have traj-id None
+            log.info('create table: write to trajdb')
             con.execute("""CREATE TABLE failed_trajectories(
                         jdt_ref REAL UNIQUE,
                         traj_id VARCHAR, 
@@ -283,12 +293,14 @@ class TrajectoryDatabase():
     def commitTrajDatabase(self):
         # commit the obs db. This function exists so we can do lazy writes in some cases
 
+        log.info('commit: write to trajdb')
         self.dbhandle.commit()
         return 
 
     def closeTrajDatabase(self):
         # close the database, making sure we commit any pending updates
 
+        log.info('commit: write to trajdb')
         self.dbhandle.commit()
         self.dbhandle.close()
         self.dbhandle = None
@@ -356,6 +368,7 @@ class TrajectoryDatabase():
                         f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},1)")
 
         sql_str = sql_str.replace('nan','"NaN"')
+        log.info('insert: write to trajdb')
         self.dbhandle.execute(sql_str)
         self.dbhandle.commit()
         return True
@@ -369,6 +382,7 @@ class TrajectoryDatabase():
         table_name = 'failed_trajectories' if failed else 'trajectories'
 
         try:
+            log.info('update: write to trajdb')
             self.dbhandle.execute(f"update {table_name} set status=0 where jdt_ref='{traj_reduced.jdt_ref}'")
             self.dbhandle.commit()
         except Exception:
@@ -467,6 +481,7 @@ class TrajectoryDatabase():
         # attach the arch db, copy the records then delete them
         archdb_fullname = os.path.join(db_path, f'{archdb_name}')
         cur = self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+        log.info('delete: write to trajdb')
         for table_name in ['trajectories', 'failed_trajectories']:
             try:
                 # bulk-copy if possible
@@ -508,6 +523,7 @@ class TrajectoryDatabase():
             log.warning(f'source database missing: {source_db_path}')
             return 
         # attach the other db, copy the records then detach it
+        log.info('insert: write to trajdb')
         cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
 
         # TODO need to correct the traj_file_path to account for server locations
