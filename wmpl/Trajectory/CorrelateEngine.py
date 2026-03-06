@@ -1747,8 +1747,6 @@ class TrajectoryCorrelator(object):
 
 
                     # Init the solver (use the earliest date as the reference)
-                    #ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
-                    #jdt_ref = datetime2JD(ref_dt)
                     jdt_ref = min([obs_temp.jdt_ref for obs_temp, _, _ in matched_observations])
 
                     log.info(f'ref_dt {jd2Date(jdt_ref, dt_obj=True)}')
@@ -1778,7 +1776,7 @@ class TrajectoryCorrelator(object):
                         # Offset all times by t0
                         for i in range(len(traj.observations)):
                             traj.observations[i].time_data -= t0
-                            log.info(f'obs jdt_ref is {jd2Date(traj.observations[i].jdt_ref, dt_obj=True)}')
+                            # log.info(f'obs jdt_ref is {jd2Date(traj.observations[i].jdt_ref, dt_obj=True)}')
 
                         # Recompute the reference JD to corresponds with t0
                         traj.jdt_ref = traj.jdt_ref + t0/86400.0
