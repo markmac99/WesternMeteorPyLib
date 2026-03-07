@@ -30,7 +30,7 @@ from wmpl.Utils.Pickling import loadPickle, savePickle
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 from wmpl.Utils.remoteDataHandling import RemoteDataHandler
 from wmpl.Trajectory.CorrelateDB import ObservationDatabase, TrajectoryDatabase
-from wmpl.Trajectory.Trajectory import Trajectory
+# from wmpl.Trajectory.Trajectory import Trajectory
 
 from wmpl.Trajectory.CorrelateEngine import MCMODE_CANDS, MCMODE_PHASE1, MCMODE_PHASE2, MCMODE_ALL, MCMODE_BOTH
 
@@ -553,10 +553,6 @@ class RMSDataHandle(object):
             else:
                 self.old_db = None
 
-            # REVISIT THIS LATER
-            #if mcmode == MCMODE_PHASE1 and self.checkRemoteDataMode() == 'master':
-            #    self.observations_db = ObservationDatabase(self.phase1_dir, 'phase1_paired.db')
-            #else:
             self.observations_db = ObservationDatabase(db_dir)
             if hasattr(self.old_db, 'paired_obs'):
                 # move any legacy paired obs data into sqlite
@@ -1046,10 +1042,17 @@ class RMSDataHandle(object):
                 self.dt_range[0].strftime("%Y-%m-%d %H:%M:%S"), 
                 self.dt_range[1].strftime("%Y-%m-%d %H:%M:%S")))
             
-        jdt_start = datetime2JD(self.dt_range[0]) 
-        jdt_end = datetime2JD(self.dt_range[1])
+        jdt_range = [datetime2JD(self.dt_range[0]), datetime2JD(self.dt_range[1])]
 
-        self.traj_db.removeDeletedTrajectories(self.output_dir, jdt_start, jdt_end)
+        traj_list = self.traj_db.getTrajMinDetails(self.output_dir, jdt_range)
+        i = 0
+        for traj in traj_list:
+            if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
+                if verbose:
+                    log.info(f'removing traj {jd2Date(traj["jdt_ref"]).strftime("%Y%m%d_%M%M%S.%f")} from database')
+                self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
+                i += 1
+        log.info(f'removed {i} deleted trajectories')
 
         return 
 
@@ -1139,7 +1142,8 @@ class RMSDataHandle(object):
     def getComputedTrajectories(self, jd_beg, jd_end):
         """ Returns a list of computed trajectories between the Julian dates.
         """
-        json_dicts = self.traj_db.getTrajectories(self.output_dir, jd_beg, jd_end)
+        jd_range = [jd_beg, jd_end]
+        json_dicts = self.traj_db.getTrajectories(self.output_dir, jd_range)
         trajs = [TrajectoryReduced(None, json_dict=j) for j in json_dicts]
         return trajs
 
@@ -1369,45 +1373,49 @@ class RMSDataHandle(object):
                 except Exception: 
                     pass
 
+        # Remove the trajectory folder from the disk
+        if os.path.isfile(traj_reduced.traj_file_path):
+            traj_dir = os.path.dirname(traj_reduced.traj_file_path)
+            shutil.rmtree(traj_dir, ignore_errors=True)
+            if os.path.isfile(traj_reduced.traj_file_path):
+                log.warning(f'unable to remove {traj_dir}')        
+
         self.traj_db.removeTrajectory(traj_reduced)
 
-    def excludeAlreadyFailedCandidates(self, matched_observations, num_obs_paired, verbose=False):
+    def checkAlreadyProcessed(self, matched_observations, verbose=False):
+        """
+        Check if a list of candidates has already been processed, and return only the new ones
+        """
 
         # go through the candidates and check if they correspond to already-failed
         candidate_trajectories=[]
         for cand in matched_observations:
             ref_dt = min([met_obs.reference_dt for _, met_obs, _ in cand])
-            jdt_ref = datetime2JD(ref_dt)
-            traj = Trajectory(jdt_ref, verbose=False)
+            ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in cand]))
+            ctry_list.sort()
+            ctries = '_'.join(ctry_list)
+            file_name = f'{ref_dt.timestamp():.6f}_{ctries}.pickle'
+            save_dir = self.candidate_dir
+            if verbose:
+                log.info(f'Candidate {file_name} contains {len(cand)} observations')
 
-            # Feed the observations into the trajectory solver
-            for obs_temp, met_obs, _ in cand:
+            if os.path.isfile(os.path.join(save_dir, file_name)) or os.path.isfile(os.path.join(save_dir, 'processed', file_name)):
+                if verbose:
+                    log.info(f'candidate {file_name} already processed')
+                continue                
 
-                # Normalize the observations to the reference Julian date
-                jdt_ref_curr = datetime2JD(met_obs.reference_dt)
-                obs_temp.time_data += (jdt_ref_curr - jdt_ref)*86400
-                obs_temp.jdt_ref = jdt_ref
-
-                traj.infillWithObs(obs_temp)
-
-            ### Recompute the reference JD and all times so that the first time starts at 0 ###
-
-            # Determine the first relative time from reference JD
-            t0 = min([obs.time_data[0] for obs in traj.observations if (not obs.ignore_station) 
-                or (not np.all(obs.ignore_list))])
-
-            # If the first time is not 0, normalize times so that the earliest time is 0
-            if t0 != 0.0:
-                # Recompute the reference JD to corresponds with t0
-                traj.jdt_ref = traj.jdt_ref + t0/86400.0
-
-            if self.checkTrajIfFailed(traj):
-                log.info(f'Candidate at {ref_dt.isoformat()} already failed, skipping')
-                num_obs_paired -= len(cand)
             else:
                 candidate_trajectories.append(cand)
     
-        return candidate_trajectories, num_obs_paired
+        return candidate_trajectories
+
+    def checkCandIfFailed(self, candidate):
+        """ Check if the given candidate has been processed with the same observations and has failed to be
+            computed before.
+        """
+        jdt_ref = min([obs.jdt_ref for obs, _, _ in candidate])
+        stations = [obs.station_id for obs, _, _ in candidate]
+        return self.traj_db.checkCandIfFailed(jdt_ref, stations)
 
     def checkTrajIfFailed(self, traj):
         """ Check if the given trajectory has been computed with the same observations and has failed to be
@@ -1599,6 +1607,7 @@ class RMSDataHandle(object):
         return status
     
     def saveCandidates(self, candidate_trajectories, verbose=False):
+        num_saved = 0
         for matched_observations in candidate_trajectories:
             ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
             ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
@@ -1608,10 +1617,11 @@ class RMSDataHandle(object):
 
             if verbose:
                 log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
-            self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose)
+            if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose):
+                num_saved += 1
 
         log.info("-----------------------")
-        log.info(f'Saved {len(candidate_trajectories)} candidates')
+        log.info(f'Saved {len(num_saved)} candidates')
         log.info("-----------------------")
 
     def saveCandOrTraj(self, traj, file_name, savetype='phase1', verbose=False):
@@ -1626,6 +1636,10 @@ class RMSDataHandle(object):
         else:
             save_dir = self.candidate_dir
             required_mode = 1
+            # don't resave the same candidate
+            if os.path.isfile(os.path.join(save_dir, file_name)) or os.path.isfile(os.path.join(save_dir, 'processed', file_name)):
+                log.info(f'candidate {file_name} already processed')
+                return False
 
         if self.RemoteDatahandler and self.RemoteDatahandler.mode == 'master':
 
@@ -1661,6 +1675,7 @@ class RMSDataHandle(object):
         if verbose:
             log.info(f'saving {file_name} to {save_dir}')
         savePickle(traj, save_dir, file_name)
+        return True
 
 
 

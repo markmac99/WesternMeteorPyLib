@@ -1192,6 +1192,7 @@ class TrajectoryCorrelator(object):
             # Add the merged observation to the final list
             merged_candidate_trajectories.append(merged_candidate)
 
+        log.info(f"After merging, there are {len(merged_candidate_trajectories)} candidates")
         return merged_candidate_trajectories, total_obs_used
 
 
@@ -1557,9 +1558,12 @@ class TrajectoryCorrelator(object):
                         log.info(f" --- ADDING CANDIDATE at {ref_dt.isoformat()} ---")
                         candidate_trajectories.append(matched_observations)
 
-                    # Check for mergeable candidate combinations then remove any that already failed. 
+                    # Check for mergeable candidate combinations 
                     merged_candidate_trajectories, num_obs_paired = self.mergeBrokenCandidates(candidate_trajectories)
-                    candidate_trajectories, num_obs_paired = self.dh.excludeAlreadyFailedCandidates(merged_candidate_trajectories, num_obs_paired)
+
+                    # Now check and exclude already-processed candidates
+                    # We can't do this earlier as we need to check mergeability first
+                    candidate_trajectories = self.dh.checkAlreadyProcessed(merged_candidate_trajectories, verbose=verbose)
 
                     log.info("-----------------------")
                     log.info(f'There are {total_unpaired - num_obs_paired} remaining unpaired observations in this bucket.')
@@ -1571,6 +1575,8 @@ class TrajectoryCorrelator(object):
                         log.info('5) SAVING {} CANDIDATES'.format(len(candidate_trajectories)))
                         log.info("-----------------------")
 
+                        # Save candidates. This will check and skip over already-processed
+                        # combinations
                         self.dh.saveCandidates(candidate_trajectories, verbose=verbose)
 
                         return len(candidate_trajectories)
@@ -1591,21 +1597,26 @@ class TrajectoryCorrelator(object):
                     log.info("-----------------------")
 
                     save_path = self.dh.candidate_dir
+                    procpath = os.path.join(save_path, 'processed')  
+                    os.makedirs(procpath, exist_ok=True)
+                    # TODO use glob.glob here
                     for fil in os.listdir(save_path):
                         if '.pickle' not in fil: 
                             continue
                         try:
-                            loadedpickle = loadPickle(save_path, fil)
-                            candidate_trajectories.append(loadedpickle)
-                            # move the loaded file so we don't try to reprocess it on a subsequent pass
-                            procpath = os.path.join(save_path, 'processed')  
-                            os.makedirs(procpath, exist_ok=True)
                             procfile = os.path.join(procpath, fil)
                             if os.path.isfile(procfile):
-                                os.remove(procfile)
+                                # Skip the trajectory if we already processed it.
+                                # To force reprocessing, move the candidate from 'candidates/processed' to 'candidates'
+                                log.info(f'Candidate {fil} already processed')
+                                os.remove(os.path.join(save_path, fil))
+                                continue
+                            loadedpickle = loadPickle(save_path, fil)
+                            candidate_trajectories.append(loadedpickle)
+                            # now move the loaded file so we don't try to reprocess it 
                             os.rename(os.path.join(save_path, fil), procfile)
                         except Exception: 
-                            print(f'Candidate {fil} went away, probably picked up by another process')
+                            log.info(f'Candidate {fil} went away, probably picked up by another process')
                     log.info("-----------------------")
                     log.info('LOADED {} CANDIDATES'.format(len(candidate_trajectories)))
                     log.info("-----------------------")
@@ -1619,7 +1630,9 @@ class TrajectoryCorrelator(object):
                 candidate_trajectories = self.dh.phase1Trajectories
             # end of "if mcmode == MCMODE_PHASE2"
 
+            # avoid reprocessing candidates that were already processed
             num_traj = len(candidate_trajectories)
+
             log.info("")
             log.info("-----------------------")
             log.info(f'SOLVING {num_traj} TRAJECTORIES {mcmodestr}')
@@ -1632,7 +1645,6 @@ class TrajectoryCorrelator(object):
                 log.info("")
                 log.info("-----------------------")
                 log.info(f'processing {"candidate" if mcmode==MCMODE_PHASE1 else "trajectory"} {i+1}/{num_traj}')
-
 
                 # if mcmode is not 2, prepare to calculate the intersecting planes solutions
                 if mcmode != MCMODE_PHASE2:
@@ -1749,7 +1761,7 @@ class TrajectoryCorrelator(object):
                     # Init the solver (use the earliest date as the reference)
                     jdt_ref = min([obs_temp.jdt_ref for obs_temp, _, _ in matched_observations])
 
-                    log.info(f'ref_dt {jd2Date(jdt_ref, dt_obj=True)}')
+                    #log.info(f'ref_dt {jd2Date(jdt_ref, dt_obj=True)}')
                     traj = self.initTrajectory(jdt_ref, mc_runs, verbose=verbose)
 
 
@@ -1772,7 +1784,7 @@ class TrajectoryCorrelator(object):
 
                     # If the first time is not 0, normalize times so that the earliest time is 0
                     if t0 != 0.0:
-                        log.info(f'adjusting by {t0}')
+                        #log.info(f'adjusting by {t0}')
                         # Offset all times by t0
                         for i in range(len(traj.observations)):
                             traj.observations[i].time_data -= t0
@@ -1782,7 +1794,7 @@ class TrajectoryCorrelator(object):
                         traj.jdt_ref = traj.jdt_ref + t0/86400.0
 
 
-                    log.info(f'ref_dt {jd2Date(traj.jdt_ref, dt_obj=True)}')
+                    #log.info(f'ref_dt {jd2Date(traj.jdt_ref, dt_obj=True)}')
                     # If this trajectory already failed to be computed, don't try to recompute it again unless
                     #   new observations are added
                     if self.dh.checkTrajIfFailed(traj):
