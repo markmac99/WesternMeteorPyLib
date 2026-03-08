@@ -317,7 +317,7 @@ class DatabaseJSON(object):
         else:
             traj_dict[traj_reduced.jdt_ref].traj_id = traj_reduced.traj_id
 
-    def removeTrajectory(self, traj_reduced, keepFolder=False):
+    def removeTrajectory(self, traj_reduced, keep_folder=False):
         """ Remove the trajectory from the data base and disk. """
 
         # Remove the trajectory data base entry
@@ -325,7 +325,7 @@ class DatabaseJSON(object):
             del self.trajectories[traj_reduced.jdt_ref]
 
         # Remove the trajectory folder on the disk
-        if not keepFolder and os.path.isfile(traj_reduced.traj_file_path):
+        if not keep_folder and os.path.isfile(traj_reduced.traj_file_path):
             traj_dir = os.path.dirname(traj_reduced.traj_file_path)
             shutil.rmtree(traj_dir, ignore_errors=True)
             if os.path.isfile(traj_reduced.traj_file_path):
@@ -1026,7 +1026,7 @@ class RMSDataHandle(object):
         else:
             return False
 
-    def removeDeletedTrajectories(self):
+    def removeDeletedTrajectories(self, verbose=True):
         """ Purge the database of any trajectories that no longer exist on disk.
             These can arise because the monte-carlo stage may update the data. 
         """
@@ -1044,12 +1044,12 @@ class RMSDataHandle(object):
             
         jdt_range = [datetime2JD(self.dt_range[0]), datetime2JD(self.dt_range[1])]
 
-        traj_list = self.traj_db.getTrajMinDetails(self.output_dir, jdt_range)
+        traj_list = self.traj_db.getTrajBasics(self.output_dir, jdt_range)
         i = 0
         for traj in traj_list:
             if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
                 if verbose:
-                    log.info(f'removing traj {jd2Date(traj["jdt_ref"]).strftime("%Y%m%d_%M%M%S.%f")} from database')
+                    log.info(f'removing traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
                 self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
                 i += 1
         log.info(f'removed {i} deleted trajectories')
@@ -1400,8 +1400,7 @@ class RMSDataHandle(object):
                 log.info(f'Candidate {file_name} contains {len(cand)} observations')
 
             if os.path.isfile(os.path.join(save_dir, file_name)) or os.path.isfile(os.path.join(save_dir, 'processed', file_name)):
-                if verbose:
-                    log.info(f'candidate {file_name} already processed')
+                log.info(f'candidate {file_name} already processed')
                 continue                
 
             else:
@@ -1621,7 +1620,7 @@ class RMSDataHandle(object):
                 num_saved += 1
 
         log.info("-----------------------")
-        log.info(f'Saved {len(num_saved)} candidates')
+        log.info(f'Saved {num_saved} candidates')
         log.info("-----------------------")
 
     def saveCandOrTraj(self, traj, file_name, savetype='phase1', verbose=False):

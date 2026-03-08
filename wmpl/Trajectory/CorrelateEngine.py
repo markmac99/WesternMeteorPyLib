@@ -1296,274 +1296,276 @@ class TrajectoryCorrelator(object):
 
                     total_unpaired = len(unpaired_observations)
                     log.info(f'Analysing {total_unpaired} observations in this bucket...')
-
-                    ### CHECK FOR PAIRING WITH PREVIOUSLY ESTIMATED TRAJECTORIES ###
-
-                    log.info("")
-                    log.info("--------------------------------------------------------------------------")
-                    log.info("    1) CHECKING IF PREVIOUSLY ESTIMATED TRAJECTORIES HAVE NEW OBSERVATIONS")
-                    log.info("--------------------------------------------------------------------------")
-                    log.info("")
-
-                    # Get a list of all already computed trajectories within the given time bin
-                    #   Reducted trajectory objects are returned
-                    
-                    if bin_time_range:
-                        # restrict checks to the bin range supplied to run() plus a day to allow for data upload times
-                        log.info(f'Getting computed trajectories for bin {str(bin_time_range[0])} to {str(bin_time_range[1])}')
-                        computed_traj_list = self.dh.getComputedTrajectories(datetime2JD(bin_time_range[0]), datetime2JD(bin_time_range[1])+1)
-                    else:
-                        # use the current bin. 
-                        log.info(f'Getting computed trajectories for {str(bin_beg)} to {str(bin_end)}')
-                        computed_traj_list = self.dh.getComputedTrajectories(datetime2JD(bin_beg), datetime2JD(bin_end))
-
-                    # Find all unpaired observations that match already existing trajectories
-                    for traj_reduced in computed_traj_list:
-
-                        # If the trajectory already has more than the maximum number of stations, skip it
-                        if len(traj_reduced.participating_stations) >= self.traj_constraints.max_stations:
-
-                            log.info(
-                                "Trajectory {:s} has already reached the maximum number of stations, "
-                                "skipping...".format(
-                                    str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc))))
-
-                            # TODO DECIDE WHETHER WE ACTUALLY WANT TO DO THIS
-                            # the problem is that we could end up with unpaired observations that form a new trajectory instead of
-                            # being added to an existing one
-                            continue
-                    
-                        # Get all unprocessed observations which are close in time to the reference trajectory
-                        traj_time_pairs = self.dh.getTrajTimePairs(traj_reduced, unpaired_observations, 
-                            self.traj_constraints.max_toffset)
-
-                        # Skip trajectory if there are no new obervations
-                        if not traj_time_pairs:
-                            continue
-
-
-                        log.info("")
-                        log.info("Checking trajectory at {:s} in countries: {:s}".format( 
-                            str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)), 
-                            ", ".join(list(set([stat_id[:2] for stat_id in traj_reduced.participating_stations])))))
-                        log.info("--------")
-
-
-                        # Filter out bad matches and only keep the good ones
-                        candidate_observations = []
-                        traj_full = None
-                        skip_traj_check = False
-                        for met_obs in traj_time_pairs:
-
-                            log.info("Candidate observation: {:s}".format(met_obs.station_code))
-
-                            platepar = self.dh.getPlatepar(met_obs)
-
-                            # Check that the trajectory beginning and end are within the distance limit
-                            if not self.trajectoryRangeCheck(traj_reduced, platepar):
-                                continue
-
-
-                            # Check that the trajectory is within the field of view
-                            if not self.trajectoryInFOV(traj_reduced, platepar):
-                                continue
-
-
-                            # Load the full trajectory object
-                            if traj_full is None:
-                                traj_full = self.dh.loadFullTraj(traj_reduced)
-
-                                # If the full trajectory couldn't be loaded, skip checking this trajectory
-                                if traj_full is None:
-                                    
-                                    skip_traj_check = True
-                                    break
-
-
-                            ### Do a rough trajectory solution and perform a quick quality control ###
-
-                            # Init observation object using the new meteor observation
-                            obs_new = self.initObservationsObject(met_obs, platepar, 
-                                ref_dt=jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc))
-                            obs_new.id = met_obs.id
-                            obs_new.station_code = met_obs.station_code
-                            obs_new.mean_dt = met_obs.mean_dt
-
-                            # Get an observation from the trajectory object with the maximum convergence angle to
-                            #   the reference observations
-                            obs_traj_best = None
-                            qc_max = 0.0
-                            for obs_tmp in traj_full.observations:
-                                
-                                # Compute the plane intersection between the new and one of trajectory observations
-                                pi = PlaneIntersection(obs_new, obs_tmp)
-
-                                # Take the observation with the maximum convergence angle
-                                if (obs_traj_best is None) or (pi.conv_angle > qc_max):
-                                    qc_max = pi.conv_angle
-                                    obs_traj_best = obs_tmp
-
-
-                            # Do a quick trajectory solution and perform sanity checks
-                            plane_intersection = self.quickTrajectorySolution(obs_traj_best, obs_new)
-                            if plane_intersection is None:
-                                continue
-
-                            ### ###
-
-                            candidate_observations.append([obs_new, met_obs])
-
-
-                        # Skip the candidate trajectory if it couldn't be loaded from disk
-                        if skip_traj_check:
-                            continue
-
-
-                        # If there are any good new observations, add them to the trajectory and re-run the solution
-                        if candidate_observations:
-
-                            log.info("Recomputing trajectory with new observations from stations:")
-
-                            # Add new observations to the trajectory object
-                            for obs_new, _ in candidate_observations:
-                                log.info(obs_new.station_id)
-                                traj_full.infillWithObs(obs_new)
-
-
-                            # Re-run the trajectory fit
-                            # pass in orig_traj here so that it can be deleted from disk if the new solution succeeds
-                            # pass the new candidates in so that they can be marked paired if the new soln succeeds
-                            # Note: mcmode must be phase1 here to force a recompute
-                            successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=MCMODE_PHASE1, 
-                                                    matched_obs=candidate_observations, orig_traj=traj_reduced, verbose=verbose)
-                            
-                            # If the new trajectory solution succeeded, remove the now-paired observations from the in memory list
-                            if successful_traj_fit:
-
-                                log.info("Remove paired observations from the processing list...")
-                                for _, met_obs_temp in candidate_observations:
-                                    unpaired_observations.remove(met_obs_temp)
-
-                            else:
-                                log.info("New trajectory solution failed, keeping the old trajectory...")
-
-                    ### ###
-
-
-                    log.info("")
-                    log.info("-------------------------------------------------")
-                    log.info("    2) PAIRING OBSERVATIONS INTO NEW TRAJECTORIES")
-                    log.info("-------------------------------------------------")
-                    log.info("")
+                    num_obs_paired = 0
 
                     # List of all candidate trajectories
                     candidate_trajectories = []
+                    
+                    ### CHECK FOR PAIRING WITH PREVIOUSLY ESTIMATED TRAJECTORIES ###
+                    if total_unpaired > 0: 
+                        log.info("")
+                        log.info("--------------------------------------------------------------------------")
+                        log.info("    1) CHECKING IF PREVIOUSLY ESTIMATED TRAJECTORIES HAVE NEW OBSERVATIONS")
+                        log.info("--------------------------------------------------------------------------")
+                        log.info("")
 
-                    # Go through all unpaired and unprocessed meteor observations
-                    for met_obs in unpaired_observations:
+                        # Get a list of all already computed trajectories within the given time bin
+                        #   Reducted trajectory objects are returned
+                        
+                        if bin_time_range:
+                            # restrict checks to the bin range supplied to run() plus a day to allow for data upload times
+                            log.info(f'Getting computed trajectories for bin {str(bin_time_range[0])} to {str(bin_time_range[1])}')
+                            computed_traj_list = self.dh.getComputedTrajectories(datetime2JD(bin_time_range[0]), datetime2JD(bin_time_range[1])+1)
+                        else:
+                            # use the current bin. 
+                            log.info(f'Getting computed trajectories for {str(bin_beg)} to {str(bin_end)}')
+                            computed_traj_list = self.dh.getComputedTrajectories(datetime2JD(bin_beg), datetime2JD(bin_end))
 
-                        # Skip observations that were processed in the meantime
-                        if met_obs.processed:
-                            continue
+                        # Find all unpaired observations that match already existing trajectories
+                        for traj_reduced in computed_traj_list:
 
-                        if self.dh.observations_db.checkObsPaired(met_obs.id, verbose=verbose):
-                            continue
+                            # If the trajectory already has more than the maximum number of stations, skip it
+                            if len(traj_reduced.participating_stations) >= self.traj_constraints.max_stations:
 
-                        # Get station platepar
-                        reference_platepar = self.dh.getPlatepar(met_obs)
-                        obs1 = self.initObservationsObject(met_obs, reference_platepar)
+                                log.info(
+                                    "Trajectory {:s} has already reached the maximum number of stations, "
+                                    "skipping...".format(
+                                        str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc))))
 
+                                # TODO DECIDE WHETHER WE ACTUALLY WANT TO DO THIS
+                                # the problem is that we could end up with unpaired observations that form a new trajectory instead of
+                                # being added to an existing one
+                                continue
+                        
+                            # Get all unprocessed observations which are close in time to the reference trajectory
+                            traj_time_pairs = self.dh.getTrajTimePairs(traj_reduced, unpaired_observations, 
+                                self.traj_constraints.max_toffset)
 
-                        # Keep a list of observations which matched the reference observation
-                        matched_observations = []
+                            # Skip trajectory if there are no new obervations
+                            if not traj_time_pairs:
+                                continue
 
-                        # Find all meteors from other stations that are close in time to this meteor
-                        plane_intersection_good = None
-                        time_pairs = self.dh.findTimePairs(met_obs, unpaired_observations, 
-                            self.traj_constraints.max_toffset)
-                        for met_pair_candidate in time_pairs:
 
                             log.info("")
-                            log.info("Processing pair:")
-                            log.info("{:s} and {:s}".format(met_obs.station_code, met_pair_candidate.station_code))
-                            log.info("{:s} and {:s}".format(str(met_obs.reference_dt), str(met_pair_candidate.reference_dt)))
-                            log.info("-----------------------")
+                            log.info("Checking trajectory at {:s} in countries: {:s}".format( 
+                                str(jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)), 
+                                ", ".join(list(set([stat_id[:2] for stat_id in traj_reduced.participating_stations])))))
+                            log.info("--------")
 
-                            ### Check if the stations are close enough and have roughly overlapping fields of view ###
 
-                            # Get candidate station platepar
-                            candidate_platepar = self.dh.getPlatepar(met_pair_candidate)
+                            # Filter out bad matches and only keep the good ones
+                            candidate_observations = []
+                            traj_full = None
+                            skip_traj_check = False
+                            for met_obs in traj_time_pairs:
 
-                            # Check if the stations are within range
-                            if not self.stationRangeCheck(reference_platepar, candidate_platepar):
+                                log.info("Candidate observation: {:s}".format(met_obs.station_code))
+
+                                platepar = self.dh.getPlatepar(met_obs)
+
+                                # Check that the trajectory beginning and end are within the distance limit
+                                if not self.trajectoryRangeCheck(traj_reduced, platepar):
+                                    continue
+
+
+                                # Check that the trajectory is within the field of view
+                                if not self.trajectoryInFOV(traj_reduced, platepar):
+                                    continue
+
+
+                                # Load the full trajectory object
+                                if traj_full is None:
+                                    traj_full = self.dh.loadFullTraj(traj_reduced)
+
+                                    # If the full trajectory couldn't be loaded, skip checking this trajectory
+                                    if traj_full is None:
+                                        
+                                        skip_traj_check = True
+                                        break
+
+
+                                ### Do a rough trajectory solution and perform a quick quality control ###
+
+                                # Init observation object using the new meteor observation
+                                obs_new = self.initObservationsObject(met_obs, platepar, 
+                                    ref_dt=jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc))
+                                obs_new.id = met_obs.id
+                                obs_new.station_code = met_obs.station_code
+                                obs_new.mean_dt = met_obs.mean_dt
+
+                                # Get an observation from the trajectory object with the maximum convergence angle to
+                                #   the reference observations
+                                obs_traj_best = None
+                                qc_max = 0.0
+                                for obs_tmp in traj_full.observations:
+                                    
+                                    # Compute the plane intersection between the new and one of trajectory observations
+                                    pi = PlaneIntersection(obs_new, obs_tmp)
+
+                                    # Take the observation with the maximum convergence angle
+                                    if (obs_traj_best is None) or (pi.conv_angle > qc_max):
+                                        qc_max = pi.conv_angle
+                                        obs_traj_best = obs_tmp
+
+
+                                # Do a quick trajectory solution and perform sanity checks
+                                plane_intersection = self.quickTrajectorySolution(obs_traj_best, obs_new)
+                                if plane_intersection is None:
+                                    continue
+
+                                ### ###
+
+                                candidate_observations.append([obs_new, met_obs])
+
+
+                            # Skip the candidate trajectory if it couldn't be loaded from disk
+                            if skip_traj_check:
                                 continue
 
-                            # Check the FOV overlap
-                            if not self.checkFOVOverlap(reference_platepar, candidate_platepar):
-                                log.info("Station FOV does not overlap: {:s} and {:s}".format(met_obs.station_code, 
-                                    met_pair_candidate.station_code))
-                                continue
 
-                            ### ###
+                            # If there are any good new observations, add them to the trajectory and re-run the solution
+                            if candidate_observations:
 
+                                log.info("Recomputing trajectory with new observations from stations:")
 
-
-                            ### Do a rough trajectory solution and perform a quick quality control ###
-
-                            # Init observations
-                            obs2 = self.initObservationsObject(met_pair_candidate, candidate_platepar, 
-                                ref_dt=met_obs.reference_dt)
-
-                            # Do a quick trajectory solution and perform sanity checks
-                            plane_intersection = self.quickTrajectorySolution(obs1, obs2)
-                            if plane_intersection is None:
-                                continue
-
-                            else:
-                                plane_intersection_good = plane_intersection
-
-                            ### ###
-
-                            matched_observations.append([obs2, met_pair_candidate, plane_intersection])
+                                # Add new observations to the trajectory object
+                                for obs_new, _ in candidate_observations:
+                                    log.info(obs_new.station_id)
+                                    traj_full.infillWithObs(obs_new)
 
 
+                                # Re-run the trajectory fit
+                                # pass in orig_traj here so that it can be deleted from disk if the new solution succeeds
+                                # pass the new candidates in so that they can be marked paired if the new soln succeeds
+                                # Note: mcmode must be phase1 here to force a recompute
+                                successful_traj_fit = self.solveTrajectory(traj_full, traj_full.mc_runs, mcmode=MCMODE_PHASE1, 
+                                                        matched_obs=candidate_observations, orig_traj=traj_reduced, verbose=verbose)
+                                
+                                # If the new trajectory solution succeeded, remove the now-paired observations from the in memory list
+                                if successful_traj_fit:
 
-                        # If there are no matched observations, skip it
-                        if len(matched_observations) == 0:
+                                    log.info("Remove paired observations from the processing list...")
+                                    for _, met_obs_temp in candidate_observations:
+                                        unpaired_observations.remove(met_obs_temp)
 
-                            if len(time_pairs) > 0:
-                                log.info("")
-                                log.info(" --- NO MATCH ---")
+                                else:
+                                    log.info("New trajectory solution failed, keeping the old trajectory...")
 
-                            continue
-
-                        # Skip if there are not good plane intersections
-                        if plane_intersection_good is None:
-                            continue
-
-                        # Add the first observation to matched observations
-                        matched_observations.append([obs1, met_obs, plane_intersection_good])
+                        ### ###
 
 
-                        # Mark observations as processed
-                        for _, met_obs_temp, _ in matched_observations:
-                            met_obs_temp.processed = True
-
-                        # Store candidate trajectory group
-                        # Note that this will include candidate groups that already failed on previous runs. 
-                        # We will exclude these later - we can't do it just yet as if new data has arrived, then 
-                        # in the next step, the group might be merged with another group creating a solvable set. 
                         log.info("")
-                        ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
-                        log.info(f" --- ADDING CANDIDATE at {ref_dt.isoformat()} ---")
-                        candidate_trajectories.append(matched_observations)
+                        log.info("-------------------------------------------------")
+                        log.info("    2) PAIRING OBSERVATIONS INTO NEW TRAJECTORIES")
+                        log.info("-------------------------------------------------")
+                        log.info("")
 
-                    # Check for mergeable candidate combinations 
-                    merged_candidate_trajectories, num_obs_paired = self.mergeBrokenCandidates(candidate_trajectories)
 
-                    # Now check and exclude already-processed candidates
-                    # We can't do this earlier as we need to check mergeability first
-                    candidate_trajectories = self.dh.checkAlreadyProcessed(merged_candidate_trajectories, verbose=verbose)
+                        # Go through all unpaired and unprocessed meteor observations
+                        for met_obs in unpaired_observations:
+
+                            # Skip observations that were processed in the meantime
+                            if met_obs.processed:
+                                continue
+
+                            if self.dh.observations_db.checkObsPaired(met_obs.id, verbose=verbose):
+                                continue
+
+                            # Get station platepar
+                            reference_platepar = self.dh.getPlatepar(met_obs)
+                            obs1 = self.initObservationsObject(met_obs, reference_platepar)
+
+
+                            # Keep a list of observations which matched the reference observation
+                            matched_observations = []
+
+                            # Find all meteors from other stations that are close in time to this meteor
+                            plane_intersection_good = None
+                            time_pairs = self.dh.findTimePairs(met_obs, unpaired_observations, 
+                                self.traj_constraints.max_toffset)
+                            for met_pair_candidate in time_pairs:
+
+                                log.info("")
+                                log.info("Processing pair:")
+                                log.info("{:s} and {:s}".format(met_obs.station_code, met_pair_candidate.station_code))
+                                log.info("{:s} and {:s}".format(str(met_obs.reference_dt), str(met_pair_candidate.reference_dt)))
+                                log.info("-----------------------")
+
+                                ### Check if the stations are close enough and have roughly overlapping fields of view ###
+
+                                # Get candidate station platepar
+                                candidate_platepar = self.dh.getPlatepar(met_pair_candidate)
+
+                                # Check if the stations are within range
+                                if not self.stationRangeCheck(reference_platepar, candidate_platepar):
+                                    continue
+
+                                # Check the FOV overlap
+                                if not self.checkFOVOverlap(reference_platepar, candidate_platepar):
+                                    log.info("Station FOV does not overlap: {:s} and {:s}".format(met_obs.station_code, 
+                                        met_pair_candidate.station_code))
+                                    continue
+
+                                ### ###
+
+
+
+                                ### Do a rough trajectory solution and perform a quick quality control ###
+
+                                # Init observations
+                                obs2 = self.initObservationsObject(met_pair_candidate, candidate_platepar, 
+                                    ref_dt=met_obs.reference_dt)
+
+                                # Do a quick trajectory solution and perform sanity checks
+                                plane_intersection = self.quickTrajectorySolution(obs1, obs2)
+                                if plane_intersection is None:
+                                    continue
+
+                                else:
+                                    plane_intersection_good = plane_intersection
+
+                                ### ###
+
+                                matched_observations.append([obs2, met_pair_candidate, plane_intersection])
+
+
+
+                            # If there are no matched observations, skip it
+                            if len(matched_observations) == 0:
+
+                                if len(time_pairs) > 0:
+                                    log.info("")
+                                    log.info(" --- NO MATCH ---")
+
+                                continue
+
+                            # Skip if there are not good plane intersections
+                            if plane_intersection_good is None:
+                                continue
+
+                            # Add the first observation to matched observations
+                            matched_observations.append([obs1, met_obs, plane_intersection_good])
+
+
+                            # Mark observations as processed
+                            for _, met_obs_temp, _ in matched_observations:
+                                met_obs_temp.processed = True
+
+                            # Store candidate trajectory group
+                            # Note that this will include candidate groups that already failed on previous runs. 
+                            # We will exclude these later - we can't do it just yet as if new data has arrived, then 
+                            # in the next step, the group might be merged with another group creating a solvable set. 
+                            log.info("")
+                            ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
+                            log.info(f" --- ADDING CANDIDATE at {ref_dt.isoformat()} ---")
+                            candidate_trajectories.append(matched_observations)
+
+                        # Check for mergeable candidate combinations 
+                        merged_candidate_trajectories, num_obs_paired = self.mergeBrokenCandidates(candidate_trajectories)
+
+                        # Now check and exclude already-processed candidates
+                        # We can't do this earlier as we need to check mergeability first
+                        candidate_trajectories = self.dh.checkAlreadyProcessed(merged_candidate_trajectories, verbose=verbose)
 
                     log.info("-----------------------")
                     log.info(f'There are {total_unpaired - num_obs_paired} remaining unpaired observations in this bucket.')

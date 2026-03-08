@@ -555,13 +555,13 @@ class TrajectoryDatabase():
         jdt_start, jdt_end = jdt_range
         table_name = 'failed_trajectories' if failed else 'trajectories'
         if not jdt_start:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name}")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} where status=1")
             rows = cur.fetchall()
         elif not jdt_end:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref={jdt_start}")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref={jdt_start} and status=1")
             rows = cur.fetchall()
         else:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end}")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1")
             rows = cur.fetchall()
         trajs = []
         for rw in rows:
