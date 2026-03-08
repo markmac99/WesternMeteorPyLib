@@ -584,11 +584,6 @@ class RMSDataHandle(object):
             # in phase 1, initialise and collect data second as we load candidates dynamically
             self.initialiseRemoteDataHandling()
 
-            # in phase1, if we're the master node, write observations updates to a temp database
-            if self.RemoteDatahandler and self.RemoteDatahandler.mode == 'master' and mcmode == MCMODE_PHASE1:
-                self.observations_db.closeObsDatabase()
-                self.observations_db = ObservationDatabase(self.phase1_dir)
-
         else:
             # in phase 2, initialise and collect data first as we need the phase1 traj on disk already
             self.traj_db = None
