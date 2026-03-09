@@ -41,7 +41,7 @@ log = logging.getLogger("traj_correlator")
 ############################################################
 
 
-class ObservationDatabase():
+class ObservationsDatabase():
     """
     A class to handle the sqlite observations database transparently.
     """
@@ -57,27 +57,22 @@ class ObservationDatabase():
 
         """
         db_full_name = os.path.join(db_path, f'{db_name}')
-        log.info(f'opening database {db_full_name}')
+        if verbose:
+            log.info(f'opening database {db_full_name}')
         con = sqlite3.connect(db_full_name)
         con.execute('pragma journal_mode=wal')
         if purge_records:
-            if verbose: 
-                log.info('purge: write to obsdb')
             con.execute('drop table paired_obs')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
-            if verbose: 
-                log.info('create table: write to obsdb')
-            con.execute("CREATE TABLE paired_obs(station_code VARCHAR(8), obs_id VARCHAR(36) UNIQUE, obs_date REAL, status INTEGER)")
+            con.execute("CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)")
         con.commit()
         self.dbhandle = con
 
-    def _commitObsDatabase(self, verbose=False):
+    def _commitObsDatabase(self):
         """
         Commit the obs db. This function exists so we can do lazy writes
         """
-        if verbose: 
-            log.info('commit: write to obsdb')
         self.dbhandle.commit()
         try:
             self.dbhandle.execute('pragma wal_checkpoint(TRUNCATE)')
@@ -98,7 +93,7 @@ class ObservationDatabase():
     def checkObsPaired(self, obs_id, verbose=False):
         """
         Check if an observation is already marked paired
-        return True if there is an observation with the correct station code, obs id and with status = 1 
+        return True if there is an observation with the correct obs id and with status = 1 
 
         Parameters:
         obs_id  : observation ID to check
@@ -115,39 +110,58 @@ class ObservationDatabase():
             log.info(f'{obs_id} is {"Paired" if paired else "Unpaired"}')
         return paired 
 
-    def addPairedObs(self, station_code, obs_id, obs_date, verbose=False):
+    def addPairedObservations(self, obs_ids, jdt_refs, verbose=False):
         """
-        Add or update an entry in the database to mark an observation paired, setting status = 1
+        Add or update a list of observations paired, setting status = 1
 
         Parameters:
-        station_code    : observation's station ID eg UK12345
+        obs_ids          : list of observation IDs
+        jdt_refs         : list of julian reference dates of the observations
+        """
+
+        vals_str = ','.join(map(str,[(id, dt, 1) for id,dt in zip(obs_ids,jdt_refs)]))
+
+        if verbose:
+            log.info(f'adding {obs_ids} to paired_obs table')
+        try:
+            self.dbhandle.execute(f"insert or replace into paired_obs values {vals_str}")
+            self.dbhandle.commit()
+            return True
+        except Exception:
+            log.warning(f'failed to add {obs_ids} to paired_obs table')
+            return False            
+
+        return 
+
+    def addPairedObs(self, obs_id, jdt_ref, verbose=False):
+        """
+        Add or update a single entry in the database to mark an observation paired, setting status = 1
+
+        Parameters:
         obs_id          : observation ID
-        obs_date:       : observation mean date
+        jdt_ref         : julian reference date of the observation
         """
 
         if verbose:
             log.info(f'adding {obs_id} to paired_obs table')
-        sqlstr = f"insert or replace into paired_obs values ('{station_code}','{obs_id}', {datetime2JD(obs_date)}, 1)"
         try:
-            if verbose:
-                log.info('update: write to obsdb')
-            self.dbhandle.execute(sqlstr)
+            self.dbhandle.execute(f"insert or replace into paired_obs values ('{obs_id}', {jdt_ref}, 1)")
             self.dbhandle.commit()
             return True
         except Exception:
             log.warning(f'failed to add {obs_id} to paired_obs table')
             return False            
 
-    def unpairObs(self, met_obs_list, verbose=False):
+    def unpairObs(self, obs_ids, verbose=False):
         """
         Mark an observation unpaired.
         If an entry exists in the database, update the status to 0. 
-        Currently unused. 
+        ** Currently unused. **
 
         Parameters:
-        met_obs_list    : a list of MeteorObsRMS objects
+        met_obs_list    : a list of observation IDs
         """
-        obs_ids_str = ','.join([f"'{met_obs.id}'" for met_obs in met_obs_list])
+        obs_ids_str = ','.join(obs_ids)
 
         if verbose:
             log.info(f'unpairing {obs_ids_str}')
@@ -158,7 +172,18 @@ class ObservationDatabase():
             return True
         except Exception:
             log.warning(f'failed to unpair {obs_ids_str}')
-            return False            
+            return False   
+
+    def getLinkedObservations(self, jdt_ref):
+        """
+        Return a list of observation IDs linked with a trajectory based on the jdt_ref of the traj
+
+        Parameters
+        jdt_ref     : the julian reference date of the trajectory
+
+        """
+        cur = self.dbhandle.execute(f"SELECT obs_id FROM paired_obs WHERE obs_dt={jdt_ref} and status=1")
+        return [x[0] for x in cur.fetchall()]
 
     def archiveObsDatabase(self, db_path, arch_prefix, archdate_jd):
         """
@@ -171,7 +196,7 @@ class ObservationDatabase():
         """
         # create the database if it doesnt exist
         archdb_name = f'{arch_prefix}_observations.db'
-        archdb = ObservationDatabase(db_path, archdb_name)
+        archdb = ObservationsDatabase(db_path, archdb_name)
         archdb.closeObsDatabase()
 
         # attach the arch db, copy the records then delete them
@@ -185,7 +210,7 @@ class ObservationDatabase():
             cur = self.dbhandle.execute(f'select * from paired_obs where obs_date < {archdate_jd}')
             for row in cur.fetchall():
                 try:
-                    self.dbhandle.execute(f"insert into archdb.paired_obs values('{row[0]}','{row[1]}',{row[2]},{row[3]})")
+                    self.dbhandle.execute(f"insert into archdb.paired_obs values('{row[0]}','{row[1]}',{row[2]})")
                 except Exception:
                     log.info(f'{row[1]} already exists in target')
 
@@ -194,7 +219,7 @@ class ObservationDatabase():
         self.dbhandle.commit()
         return 
 
-    def moveObsJsonRecords(self, paired_obs, dt_range):
+    def copyObsJsonRecords(self, paired_obs, dt_range):
         """ 
         Copy recent data from the legacy Json database to the new database.
         By design this only copies at most the last seven days, but a date-range can be 
@@ -224,7 +249,7 @@ class ObservationDatabase():
                 obs_date = obs_date.replace(tzinfo=datetime.timezone.utc)
 
                 if obs_date >= dt_beg and obs_date < dt_end:
-                    self.addPairedObs(stat_id, obs_id, obs_date)
+                    self.addPairedObs(obs_id)
                     i += 1
                 if not i % 100000 and i != 0:
                     log.info(f'moved {i} observations')
@@ -422,7 +447,7 @@ class TrajectoryDatabase():
             found = True if (traj_stations == station_list) else False
         return found
 
-    def addTrajectory(self, traj_reduced, failed=False, verbose=False):
+    def addTrajectory(self, traj_reduced, failed=False, force_add=True, verbose=False):
         """
         add or update an entry in the database, setting status = 1
 
@@ -432,8 +457,17 @@ class TrajectoryDatabase():
 
         """
 
+        tblname = 'failed_trajectories' if failed else 'trajectories'
+
+        # if force_add is false, don't replace any existing entry
+        if not force_add:
+            res = self.dbhandle.execute(f'select traj_id from {tblname} where status =1')
+            row = res.fetchone()
+            if row is not None and row[0] !='None':
+                return True
+            
         if verbose:
-            log.info(f'adding jdt {traj_reduced.jdt_ref} to {"failed" if failed else "trajectories"}')
+            log.info(f'adding jdt {traj_reduced.jdt_ref} to {tblname}')
 
         # remove the output_dir part from the path so that the data are location-independent
         traj_file_path = traj_reduced.traj_file_path[traj_reduced.traj_file_path.find('trajectories'):]
@@ -469,8 +503,7 @@ class TrajectoryDatabase():
                         f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},1)")
 
         sql_str = sql_str.replace('nan','"NaN"')
-        if verbose:
-            log.info('insert: write to trajdb')
+
         self.dbhandle.execute(sql_str)
         self.dbhandle.commit()
         return True
@@ -488,8 +521,6 @@ class TrajectoryDatabase():
             log.info(f'removing {traj_reduced.traj_id}')
         table_name = 'failed_trajectories' if failed else 'trajectories'
 
-        if verbose:
-            log.info('update: write to trajdb')
         self.dbhandle.execute(f"update {table_name} set status=0 where jdt_ref='{traj_reduced.jdt_ref}'")
         self.dbhandle.commit()
 
@@ -599,16 +630,17 @@ class TrajectoryDatabase():
         self.dbhandle.commit()
         return 
 
-    def moveFailedTrajectories(self, failed_trajectories, dt_range):
+    def copyTrajJsonRecords(self, trajectories, dt_range, failed=True):
         """
-        Copy failed trajectories from the old Json database 
-        We only copy recent records since if we ever run for an historic date
-        its likely we will want to reanalyse all available obs anyway
+        Copy trajectories from the old Json database 
+        We only copy recent failed traj records since if we ever run for an historic date
+        its likely we will want to reanalyse all available data
 
         Parameters:
 
-        failed_trajectories : json list of fails extracted from the old Json DB
-        dt_range:           : date range to use, at most seven days at a time
+        trajectories    : json list of trajetories extracted from the old Json DB
+        dt_range:       : date range to use, at most seven days at a time
+        failed          : boolean, default true to move failed traj
 
         """
         jd_end = datetime2JD(dt_range[1])
@@ -617,10 +649,10 @@ class TrajectoryDatabase():
         log.info('moving recent failed trajectories to sqlite - this may take some time....')
         log.info(f'observation date range {jd2Date(jd_beg, dt_obj=True).isoformat()} to {dt_range[1].isoformat()}')
 
-        keylist = [k for k in failed_trajectories.keys() if float(k) >= jd_beg and float(k) <= jd_end]
+        keylist = [k for k in trajectories.keys() if float(k) >= jd_beg and float(k) <= jd_end]
         i = 0 # just in case there aren't any trajectories to move
         for i,jdt_ref in enumerate(keylist):
-            self.addTrajectory(failed_trajectories[jdt_ref], failed=True)
+            self.addTrajectory(trajectories[jdt_ref], failed=failed)
             i += 1
             if not i % 10000:
                 self._commitTrajDatabase()
@@ -770,15 +802,15 @@ if __name__ == '__main__':
         else:
             dt_range_jd = [datetime2JD(dt_range[0]),datetime2JD(dt_range[1])]
             jsondb = dummyDatabaseJSON(db_dir=cml_args.dir_path)
-            obsdb = ObservationDatabase(cml_args.dir_path)
-            obsdb.moveObsJsonRecords(jsondb.paired_obs, dt_range)
+            obsdb = ObservationsDatabase(cml_args.dir_path)
+            obsdb.copyObsJsonRecords(jsondb.paired_obs, dt_range)
             obsdb.closeObsDatabase()
             trajdb = TrajectoryDatabase(cml_args.dir_path)
-            trajdb.moveFailedTrajectories(jsondb.failed_trajectories, dt_range)
+            trajdb.copyTrajJsonRecords(jsondb.failed_trajectories, dt_range, failed=True)
             trajdb.closeTrajDatabase()
     else:
         if dbname == 'observations':
-            obsdb = ObservationDatabase(cml_args.dir_path)
+            obsdb = ObservationsDatabase(cml_args.dir_path)
             if action == 'status':
                 cur = obsdb.dbhandle.execute('select * from paired_obs where status=1')
                 print(f'there are {len(cur.fetchall())} paired obs')
@@ -787,7 +819,8 @@ if __name__ == '__main__':
             if action == 'execute':
                 print(stmt)
                 cur = obsdb.dbhandle.execute(stmt)
-                print(cur.fetchall())
+                for rw in cur.fetchall():
+                    print(rw)
             obsdb.closeObsDatabase()
 
         elif dbname == 'trajectories':
@@ -797,6 +830,11 @@ if __name__ == '__main__':
                 print(f'there are {len(cur.fetchall())} successful trajectories')
                 cur = trajdb.dbhandle.execute('select * from failed_trajectories')
                 print(f'and       {len(cur.fetchall())} failed trajectories')
-            trajdb.closeObsDatabase()
+            if action == 'execute':
+                print(stmt)
+                cur = trajdb.dbhandle.execute(stmt)
+                for rw in cur.fetchall():
+                    print(rw)
+            trajdb.closeTrajDatabase()
         else:
             log.info('valid database not specified')
