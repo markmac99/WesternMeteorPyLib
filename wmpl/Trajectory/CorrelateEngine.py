@@ -1058,16 +1058,9 @@ class TrajectoryCorrelator(object):
             # we do not need to update the database for phase2 
             if mcmode != MCMODE_PHASE2:
                 log.info('Updating database....')
-                self.dh.addTrajectory(traj)
+                self.dh.addTrajectory(traj, verbose=verbose)
                 if matched_obs is not None: 
-                    if len(matched_obs[0])==3:
-                        for _, obs, _ in matched_obs:
-                            self.dh.observations_db.addPairedObs(obs.station_code, obs.id, obs.mean_dt, verbose=verbose)
-                    else:
-                        for _, obs in matched_obs:
-                            self.dh.observations_db.addPairedObs(obs.station_code, obs.id, obs.mean_dt, verbose=verbose)
-
-
+                    self.dh.addPairedObs(matched_obs, traj.jdt_ref, verbose=verbose)
         else:
             log.info('unable to fit trajectory')
 
@@ -1300,7 +1293,7 @@ class TrajectoryCorrelator(object):
 
                     # List of all candidate trajectories
                     candidate_trajectories = []
-                    
+
                     ### CHECK FOR PAIRING WITH PREVIOUSLY ESTIMATED TRAJECTORIES ###
                     if total_unpaired > 0: 
                         log.info("")
@@ -1468,7 +1461,7 @@ class TrajectoryCorrelator(object):
                             if met_obs.processed:
                                 continue
 
-                            if self.dh.observations_db.checkObsPaired(met_obs.id, verbose=verbose):
+                            if self.dh.checkIfObsPaired(met_obs.id, verbose=verbose):
                                 continue
 
                             # Get station platepar
@@ -1574,7 +1567,10 @@ class TrajectoryCorrelator(object):
                     # in candidate mode we want to save the candidates to disk
                     if mcmode == MCMODE_CANDS:
                         log.info("-----------------------")
-                        log.info('5) SAVING {} CANDIDATES'.format(len(candidate_trajectories)))
+                        if bin_time_range:
+                            log.info(f'5) SAVING {len(candidate_trajectories)} CANDIDATES for {str(bin_time_range[0])} to {str(bin_time_range[1])}')
+                        else:
+                            log.info(f'5) SAVING {len(candidate_trajectories)} CANDIDATES for {str(bin_beg)} to {str(bin_end)}')
                         log.info("-----------------------")
 
                         # Save candidates. This will check and skip over already-processed
