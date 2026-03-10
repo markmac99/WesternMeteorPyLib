@@ -387,6 +387,9 @@ class RMSDataHandle(object):
         self.mc_mode = mcmode
 
         self.dir_path = dir_path
+        # create the data directory. Of course, if the folder doesnt exist there is nothing to process
+        # but by creating it we avoid an Exception later. And we can always copy data in. 
+        mkdirP(dir_path)
 
         self.dt_range = dt_range
 
@@ -410,17 +413,25 @@ class RMSDataHandle(object):
         # Create the output directory if it doesn't exist
         mkdirP(self.output_dir)
 
+        if dt_range is None or dt_range[0] == datetime.datetime(2000,1,1,0,0,0).replace(tzinfo=datetime.timezone.utc):
+            daysback = 14
+        else:
+            daysback = (datetime.datetime.now().replace(tzinfo=datetime.timezone.utc) - dt_range[0]).days + 1
+
         # Candidate directory, if running in create or load cands modes
         self.candidate_dir = os.path.join(self.output_dir, 'candidates')
-        if not self.mc_mode & MCMODE_PHASE2:
-            mkdirP(os.path.join(self.candidate_dir, 'processed'))
-            self.purgeProcessedData(os.path.join(self.candidate_dir, 'processed'))
+        mkdirP(os.path.join(self.candidate_dir, 'processed'))
+        num_removed_cands = self.purgeProcessedData(os.path.join(self.candidate_dir, 'processed'), days_back=daysback, verbose=verbose)
+        log.info(f'removed {num_removed_cands} processed candidates')
 
-        # Phase 1 trajectory pickle directory needed to reload previous results.
+        # Phase 1 trajectory pickle directory needed to reload previous results when running phase2.
         self.phase1_dir = os.path.join(self.output_dir, 'phase1')
-        if self.mc_mode & MCMODE_PHASE1:
-            mkdirP(os.path.join(self.phase1_dir, 'processed'))
-            self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'))
+        mkdirP(os.path.join(self.phase1_dir, 'processed'))
+        num_removed_ph1 = self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'), days_back=daysback, verbose=verbose)
+        log.info(f'removed {num_removed_ph1} processed phase1')
+
+        # In a previous incarnation, if the solver crashed it could leave some `.pickle_processing files`.
+        self.cleanupPartialProcessing()
 
         self.verbose = verbose
 
@@ -535,37 +546,40 @@ class RMSDataHandle(object):
         else:
             self.RemoteDatahandler = None
 
-    def purgeProcessedData(self, dir_path, days_back=30):
+    def purgeProcessedData(self, dir_path, days_back=14, verbose=False):
         """ Purge processed candidate or phase1 data if it is older than 30 days. """
 
         refdt = time.time() - days_back*86400
-        result = []
-        for path, _, files in os.walk(dir_path):
+        num_removed = 0
+        log.info(f'purging processed data from {dir_path} thats older than {days_back} days')
 
-            for file in files:
+        for file_name in glob.glob(os.path.join(dir_path,'*.pickle')):
+            try:
+                file_dt = os.stat(file_name).st_mtime 
+                if file_dt < refdt:
+                    if verbose: 
+                        log.info(f'removing {file_name}')
+                    os.remove(file_name)
+                    num_removed += 1
+            except FileNotFoundError:
+                log.warning(f"File disappeared: {file_name}")
+                continue
+            except Exception as e:
+                log.error(f"Error removing file {file_name}: {e}")
 
-                file_path = os.path.join(path, file)
+        return num_removed
 
-                # Check if the file is older than the reference date
-                try:
-                    file_dt = os.stat(file_path).st_mtime
-                except FileNotFoundError:
-                    log.warning(f"File not found: {file_path}")
-                    continue
-
-                if os.path.exists(file_path) and (file_dt < refdt) and os.path.isfile(file_path):
-                    
-                    try:
-                        os.remove(file_path)
-                        result.append(file_path)
-
-                    except FileNotFoundError:
-                        log.warning(f"File not found: {file_path}")
-
-                    except Exception as e:
-                        log.error(f"Error removing file {file_path}: {e}")
-        
-        return result
+    def cleanupPartialProcessing(self):
+        log.info('checking for partially-processed phase1 files')
+        i=0
+        for i, file_name in enumerate(glob.glob(os.path.join(self.phase1_dir, '*.pickle_processing'))):
+            new_name = file_name.replace('_processing','')
+            if os.path.isfile(new_name):
+                os.remove(file_name)
+            else:
+                os.rename(file_name, new_name)
+        log.info(f'updated {i} partially-processed files')
+        return 
 
     def archiveOldRecords(self, older_than=3):
         """
@@ -1454,6 +1468,7 @@ class RMSDataHandle(object):
         Used in 'master' mode: this moves uploaded data to the target locations on the server
         and merges in the databases
         """
+        log.info('merging in any remotely processed data')
         for node in self.RemoteDatahandler.nodes:
             if node.nodename == 'localhost' or self.observations_db is None or self.trajectory_db is None:
                 continue
@@ -1507,9 +1522,90 @@ class RMSDataHandle(object):
                     os.remove(full_name)
 
                 if i > 0:
-                    log.info(f'moved {i+1} phase 1 files from {node.nodename}')
+                    log.info(f'moved {i+1} phase 1 solutions from {node.nodename}')
+            
+            # if the node was in mode 1 then move any uploaded processed candidates
+            remote_canddir = os.path.join(node.dirpath, 'files', 'candidates', 'processed')
+            if os.path.isdir(remote_canddir) and node.mode==1:
+                i = 0
+                targ_dir = os.path.join(self.candidate_dir, 'processed')
+                for i, fil in enumerate([x for x in os.listdir(remote_canddir) if '.pickle' in x]):
+                    full_name = os.path.join(remote_canddir, fil)
+                    shutil.copy(full_name, targ_dir)
+                    os.remove(full_name)
+
+                if i > 0:
+                    log.info(f'moved {i+1} processed candidates from {node.nodename}')
             
         return True
+
+    def checkAndRedistribCands(self, wait_time=6, verbose=False):
+        """
+        Check child nodes and 
+        1) if the stop flag has appeared, move any pending data to prevent it getting stuck
+        2) move data if it has been waiting more than wait_time hours
+        3) if the node is idle, assign it extra data
+
+        Parameters:
+        wait_time   : time in hours to wait before data is considered stale
+
+        """
+        for node in self.RemoteDatahandler.nodes:
+            if node.nodename == 'localhost' or self.observations_db is None or self.trajectory_db is None:
+                continue
+            # if the remote node upload path doesn't exist skip it
+            if not os.path.isdir(os.path.join(node.dirpath,'files')):
+                continue
+
+            # if the stop file has appeared, then move any pending candidates or phase1 files
+            if os.path.isfile(os.path.join(node.dirpath, 'files','stop')):
+                log.info(f'{node.nodename} stopfile has appeared, moving data')
+                for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
+                    shutil.copy(full_name, self.candidate_dir)
+                    os.remove(full_name)
+                for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle')):
+                    shutil.copy(full_name, self.phase1_dir)
+                    os.remove(full_name) 
+            else:
+                # if the stop file isnt present and the nodes are idle, give them something to do
+                targ_dir = os.path.join(node.dirpath, 'files', 'candidates')
+                if len(glob.glob(os.path.join(targ_dir, '*.pickle'))) == 0 and node.mode == MCMODE_PHASE1:
+                    # the node is waiting for data
+                    log.info(f'{node.nodename} idle, giving it extra candidates')
+                    i = 0
+                    for i, full_name in enumerate(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))):
+                        shutil.copy(full_name, targ_dir)
+                        os.remove(full_name) 
+                        i +=1 
+                        if i == node.capacity:
+                            break
+                    pass
+                targ_dir = os.path.join(node.dirpath, 'files', 'phase1')
+                if len(glob.glob(os.path.join(targ_dir, '*.pickle'))) == 0 and node.mode == MCMODE_PHASE2:
+                    # the node is waiting for data
+                    log.info(f'{node.nodename} idle, giving it extra phase1 data')
+                    i = 0
+                    for i, full_name in enumerate(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))):
+                        shutil.copy(full_name, targ_dir)
+                        os.remove(full_name) 
+                        i +=1 
+                        if i == node.capacity:
+                            break
+                    pass
+
+            # if the files have been in the nodes folder for more than wait_time hours, move them      
+            refdt = time.time() - wait_time*3600
+            log.info(f'moving any stale data assigned to {node.nodename}')
+            for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
+                if os.stat(full_name).st_mtime < refdt:
+                    shutil.copy(full_name, self.candidate_dir)
+                    os.remove(full_name)
+            for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle')):
+                if os.stat(full_name).st_mtime < refdt:
+                    shutil.copy(full_name, self.phase1_dir)
+                    os.remove(full_name)         
+
+        return 
 
     def getRemoteData(self, verbose=False):
         """
@@ -1563,7 +1659,7 @@ class RMSDataHandle(object):
 
             # Select a random bucket, check its not already full, and then save the pickle there.
             # Make sure to break out once all buckets have been tested
-            # Fallback/default is to use the local phase_1 dir. 
+            # Fallback/default is to use the local dir. 
             tested_buckets = []
             bucket_num = -1
             bucket_list = self.RemoteDatahandler.nodes
@@ -1572,7 +1668,7 @@ class RMSDataHandle(object):
             while bucket_num not in tested_buckets:
                 bucket_num = secrets.randbelow(len(bucket_list))
                 bucket = bucket_list[bucket_num]
-                # if the child isn't in mc mode, skip it
+                # if the child isn't the right mode, skip it
                 if bucket.mode != required_mode and bucket.mode != -1:
                     tested_buckets.append(bucket_num)
                     continue
@@ -2017,8 +2113,10 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                             dh.observations_db = ObservationsDatabase(dh.db_dir, purge_records=True)
 
                     if dh.RemoteDatahandler and dh.RemoteDatahandler.mode == 'master':
+                        # move any uploaded data and then check and rebalance any pending cands or phase1s
                         dh.moveUploadedData(verbose=verbose)
-                        pass
+                        dh.checkAndRedistribCands(wait_time=6, verbose=verbose)
+
                     # If we're in either of these modes, the correlator will have scooped up available data
                     # from candidates or phase1 folders so no need to keep looping. 
                     if mcmode == MCMODE_PHASE1 or mcmode == MCMODE_PHASE2:
