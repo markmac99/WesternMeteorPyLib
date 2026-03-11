@@ -443,6 +443,9 @@ class RMSDataHandle(object):
         # create an empty processing list
         self.processing_list = []
 
+        # maximum number of candidates or trajectories to load in one go. Should improve performance
+        self.max_trajs = max_trajs
+
         log.info("")
 
         if mcmode != MCMODE_PHASE2:
@@ -495,7 +498,7 @@ class RMSDataHandle(object):
             self.observations_db = None
             self.initialiseRemoteDataHandling()
 
-            dt_beg, dt_end = self.loadPhase1Trajectories(max_trajs=max_trajs)
+            dt_beg, dt_end = self.loadPhase1Trajectories()
             self.processing_list = None
             self.dt_range=[dt_beg, dt_end]
 
@@ -1383,14 +1386,10 @@ class RMSDataHandle(object):
             
             return None
 
-    def loadPhase1Trajectories(self, max_trajs=1000):
+    def loadPhase1Trajectories(self):
         """
         Load trajectories calculated by the intersecting-planes phase 1. These trajectories
         do not include uncertainties which are calculated in the Monte-Carlo phase 2
-
-        keyword arguments:
-        maxtrajs: [int] maximum number of trajectories to load in each pass, to avoid taking too long per pass.
-
 
         returns:
         dt_beg, dt_end: [datetime] The earliest and latest date/time of the loaded trajectories. Used later to set the 
@@ -1399,7 +1398,7 @@ class RMSDataHandle(object):
         """
         pickles = glob.glob1(self.phase1_dir, "*_trajectory.pickle")
         pickles.sort()
-        pickles = pickles[:max_trajs]
+        pickles = pickles[:self.max_trajs]
         self.phase1Trajectories = []
         if len(pickles) == 0:
             return None, None
@@ -1440,6 +1439,35 @@ class RMSDataHandle(object):
                 # if the file couldn't be read, then skip it for now - we'll get it in the next pass
                 log.info(f'File {pick} skipped for now')
         return dt_beg, dt_end
+
+    def loadCandidates(self, verbose=False):
+        """
+        Load candidates from the 'candidates' folder and then move the file to the 'candidates/processed' folder
+        Used only in phase1 solving mode 
+        """
+        candidate_trajectories = []
+        save_path = self.candidate_dir
+        procpath = os.path.join(save_path, 'processed')  
+        os.makedirs(procpath, exist_ok=True)
+        # TODO use glob.glob here
+        for fil in os.listdir(save_path)[:self.max_trajs]:
+            if '.pickle' not in fil: 
+                continue
+            try:
+                loadedpickle = loadPickle(save_path, fil)
+                candidate_trajectories.append(loadedpickle)
+
+                # now move the loaded file so we don't try to reprocess it 
+                procfile = os.path.join(procpath, fil)
+                os.rename(os.path.join(save_path, fil), procfile)
+
+            except Exception: 
+                log.info(f'Candidate {fil} went away, probably picked up by another process')
+        log.info("-----------------------")
+        log.info('LOADED {} CANDIDATES'.format(len(candidate_trajectories)))
+        log.info("-----------------------")
+
+        return candidate_trajectories
    
     def moveUploadedData(self, verbose=False):
         """
@@ -1521,7 +1549,7 @@ class RMSDataHandle(object):
         """
         Check child nodes and 
         1) if the stop flag has appeared, move any pending data to prevent it getting stuck
-        2) move data if it has been waiting more than wait_time hours
+        2) move data if it has been waiting more than wait_time hours, default six
         3) if the node is idle, assign it extra data
 
         Parameters:
@@ -1536,6 +1564,7 @@ class RMSDataHandle(object):
                 continue
 
             # if the stop file has appeared, then move any pending candidates or phase1 files
+
             if os.path.isfile(os.path.join(node.dirpath, 'files','stop')):
                 log.info(f'{node.nodename} stopfile has appeared, moving data')
                 for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
@@ -1545,7 +1574,8 @@ class RMSDataHandle(object):
                     shutil.copy(full_name, self.phase1_dir)
                     os.remove(full_name) 
             else:
-                # if the stop file isnt present and the nodes are idle, give them something to do
+                # if the stop file isn't present and the nodes are idle, give them something to do
+
                 targ_dir = os.path.join(node.dirpath, 'files', 'candidates')
                 if len(glob.glob(os.path.join(targ_dir, '*.pickle'))) == 0 and node.mode == MCMODE_PHASE1:
                     # the node is waiting for data
@@ -1557,7 +1587,7 @@ class RMSDataHandle(object):
                         i +=1 
                         if i == node.capacity:
                             break
-                    pass
+
                 targ_dir = os.path.join(node.dirpath, 'files', 'phase1')
                 if len(glob.glob(os.path.join(targ_dir, '*.pickle'))) == 0 and node.mode == MCMODE_PHASE2:
                     # the node is waiting for data
@@ -1569,9 +1599,9 @@ class RMSDataHandle(object):
                         i +=1 
                         if i == node.capacity:
                             break
-                    pass
 
-            # if the files have been in the nodes folder for more than wait_time hours, move them      
+            # if the files have been in the node folder for more than wait_time hours, move them
+            #    
             refdt = time.time() - wait_time*3600
             log.info(f'moving any stale data assigned to {node.nodename}')
             for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
@@ -1603,6 +1633,15 @@ class RMSDataHandle(object):
         return status
     
     def saveCandidates(self, candidate_trajectories, verbose=False):
+        """
+        Save candidates to file by constructing a name, checking if we already processed it and then 
+        calling saveCandsorTraj if needed. The function checkAndAddCand adds to candidates.db so that we can 
+        avoid reprocessing the same candidate on a future pass. 
+
+        Parameters:
+        candidate_trajectories  :   list of candidates
+    
+        """
         num_saved = 0
         for matched_observations in candidate_trajectories:
 
@@ -1630,8 +1669,14 @@ class RMSDataHandle(object):
 
     def saveCandOrTraj(self, traj, file_name, savetype='phase1', verbose=False):
         """
-        in mcmode MCMODE_PHASE1 or MCMODE_SIMPLE , save the candidates or phase 1 trajectories
-        and distribute as appropriate
+        in mcmode MCMODE_PHASE1 or MCMODE_SIMPLE , save the candidates or phase 1 trajectories.
+        If remote data processing is enabled, this function distributes candidates amongst 
+        any nodes that are in candidate-processing mode (MCMODE_PHASE1). 
+
+        Parameters:
+        traj        : The trajectory or candidate to save
+        file_name   : The filename to use
+        save_type   : The type of object we're saving. 
     
         """
         if savetype == 'phase1':

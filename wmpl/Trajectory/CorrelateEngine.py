@@ -17,7 +17,6 @@ from wmpl.Utils.Math import vectNorm, vectMag, angleBetweenVectors, vectorFromPo
 from wmpl.Utils.ShowerAssociation import associateShowerTraj
 from wmpl.Utils.TrajConversions import J2000_JD, geo2Cartesian, cartesian2Geo, raDec2AltAz, altAz2RADec, \
     raDec2ECI, datetime2JD, jd2Date, equatorialCoordPrecession_vect
-from wmpl.Utils.Pickling import loadPickle
 
 MCMODE_NONE = 0
 MCMODE_PHASE1 = 1
@@ -1586,41 +1585,17 @@ class TrajectoryCorrelator(object):
                 else:
                     # candidatemode is LOAD so load any available candidates for processing
                     traj_solved_count = 0
-                    candidate_trajectories = []
                     log.info("-----------------------")
-                    log.info('LOADING CANDIDATES')
+                    log.info('6) LOADING CANDIDATES')
                     log.info("-----------------------")
+                    candidate_trajectories = self.dh.loadCandidates(verbose=verbose)
 
-                    save_path = self.dh.candidate_dir
-                    procpath = os.path.join(save_path, 'processed')  
-                    os.makedirs(procpath, exist_ok=True)
-                    # TODO use glob.glob here
-                    for fil in os.listdir(save_path):
-                        if '.pickle' not in fil: 
-                            continue
-                        try:
-                            procfile = os.path.join(procpath, fil)
-                            if os.path.isfile(procfile):
-                                # Skip the trajectory if we already processed it.
-                                # To force reprocessing, move the candidate from 'candidates/processed' to 'candidates'
-                                log.info(f'Candidate {fil} already processed')
-                                os.remove(os.path.join(save_path, fil))
-                                continue
-                            loadedpickle = loadPickle(save_path, fil)
-                            candidate_trajectories.append(loadedpickle)
-                            # now move the loaded file so we don't try to reprocess it 
-                            os.rename(os.path.join(save_path, fil), procfile)
-                        except Exception: 
-                            log.info(f'Candidate {fil} went away, probably picked up by another process')
-                    log.info("-----------------------")
-                    log.info('LOADED {} CANDIDATES'.format(len(candidate_trajectories)))
-                    log.info("-----------------------")
                 # end of 'self.candidatemode == CANDMODE_LOAD'
             # end of 'if mcmode != MCMODE_PHASE2' 
             else: 
                 # mcmode == MCMODE_PHASE2 so we need to load the phase1 solutions
                 log.info("-----------------------")
-                log.info('LOADING PHASE1 SOLUTIONS')
+                log.info('6) LOADING PHASE1 SOLUTIONS')
                 log.info("-----------------------")
                 candidate_trajectories = self.dh.phase1Trajectories
             # end of "if mcmode == MCMODE_PHASE2"
@@ -1630,7 +1605,7 @@ class TrajectoryCorrelator(object):
 
             log.info("")
             log.info("-----------------------")
-            log.info(f'SOLVING {num_traj} TRAJECTORIES {mcmodestr}')
+            log.info(f'7) SOLVING {num_traj} TRAJECTORIES {mcmodestr}')
             log.info("-----------------------")
             log.info("")
 
