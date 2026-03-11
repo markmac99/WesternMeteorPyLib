@@ -692,6 +692,101 @@ class TrajectoryDatabase():
         cur.execute("detach database 'sourcedb'")
         return status
 
+
+############################################################
+
+
+class CandidatesDatabase():
+    """
+    A class to handle the sqlite candidates database transparently.
+    """
+
+    def __init__(self, db_path, db_name='candidates.db', purge_records=False, verbose=False):
+        """
+        Create a database instance
+
+        Parameters:
+        db_path         : path to the location of the database
+        db_name         : name to use, typically candidates.db
+
+        """
+        db_full_name = os.path.join(db_path, f'{db_name}')
+        if verbose:
+            log.info(f'opening database {db_full_name}')
+        con = sqlite3.connect(db_full_name)
+        con.execute('pragma journal_mode=wal')
+        res = con.execute("SELECT name FROM sqlite_master WHERE name='candidates'")
+        if res.fetchone() is None:
+            con.execute("CREATE TABLE candidates(cand_id VARCHAR UNIQUE, obs_ids VARCHAR, status INTEGER)")
+        con.commit()
+        self.dbhandle = con
+
+    def _commitCandDatabase(self):
+        """
+        Commit the db. This function exists so we can do lazy writes
+        """
+        self.dbhandle.commit()
+        try:
+            self.dbhandle.execute('pragma wal_checkpoint(TRUNCATE)')
+        except Exception:
+            self.dbhandle.execute('pragma wal_checkpoint(PASSIVE)')
+        return 
+
+    def closeCandDatabase(self):
+        """
+        Close database, making sure we commit any pending updates
+        """
+
+        self._commitCandDatabase()
+        self.dbhandle.close()
+        self.dbhandle = None
+        return 
+
+    def checkAndAddCand(self, cand_id, obs_ids, verbose=False):
+        """
+        Check and add a candidate if its not already there
+
+        Parameters:
+        cand_id     : candidate ID
+        obs_ids     : list of observation IDs
+
+        Returns: 
+            True if added, False if its already present
+        """
+        
+        present = True
+        cur = self.dbhandle.execute(f"SELECT * FROM candidates WHERE cand_id='{cand_id}' and status=1")
+        if cur.fetchone() is not None:
+            present = False
+        else:
+            present = True
+            obs_ids_str = json.dumps(';'.join(obs_ids))
+            self.dbhandle.execute(f"insert into candidates values ('{cand_id}','{obs_ids_str}',1)")
+            self.dbhandle.commit()
+        if verbose:
+            log.info(f'{cand_id} is {"added" if present else "not added"}')
+        return present
+
+    def getCandidate(self, cand_id, verbose=False):
+        """
+        retrieve details of a candidate
+
+        Parameters:
+        cand_id     : candidate ID
+
+        Returns: 
+            the observations linked to the candidate
+        """
+        
+        obs_ids = []
+        cur = self.dbhandle.execute(f"SELECT * FROM candidates WHERE cand_id='{cand_id}' and status=1")
+        rw = cur.fetchone()
+        if rw is not None:
+            obs_ids= rw[1].split(',')
+        if verbose:
+            log.info(f'{cand_id} contains {obs_ids}')
+        return obs_ids
+
 ##################################################################################
 # dummy classes for use in the above.
 # We can't import from CorrelateRMS as this would create a circular reference 

@@ -1555,10 +1555,7 @@ class TrajectoryCorrelator(object):
 
                         # Check for mergeable candidate combinations 
                         merged_candidate_trajectories, num_obs_paired = self.mergeBrokenCandidates(candidate_trajectories)
-
-                        # Now check and exclude already-processed candidates
-                        # We can't do this earlier as we need to check mergeability first
-                        candidate_trajectories = self.dh.checkAlreadyProcessed(merged_candidate_trajectories, verbose=verbose)
+                        candidate_trajectories = merged_candidate_trajectories
 
                     log.info("-----------------------")
                     log.info(f'There are {total_unpaired - num_obs_paired} remaining unpaired observations in this bucket.')

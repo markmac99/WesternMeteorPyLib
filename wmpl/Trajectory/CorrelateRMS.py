@@ -29,7 +29,7 @@ from wmpl.Utils.OSTools import mkdirP
 from wmpl.Utils.Pickling import loadPickle, savePickle
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 from wmpl.Utils.remoteDataHandling import RemoteDataHandler
-from wmpl.Trajectory.CorrelateDB import ObservationsDatabase, TrajectoryDatabase
+from wmpl.Trajectory.CorrelateDB import ObservationsDatabase, TrajectoryDatabase, CandidatesDatabase
 # from wmpl.Trajectory.Trajectory import Trajectory
 
 from wmpl.Trajectory.CorrelateEngine import MCMODE_CANDS, MCMODE_PHASE1, MCMODE_PHASE2, MCMODE_ALL, MCMODE_BOTH
@@ -498,6 +498,11 @@ class RMSDataHandle(object):
             dt_beg, dt_end = self.loadPhase1Trajectories(max_trajs=max_trajs)
             self.processing_list = None
             self.dt_range=[dt_beg, dt_end]
+
+        self.candidate_db = None
+        if mcmode == MCMODE_CANDS:
+            self.candidate_db = CandidatesDatabase(db_dir)
+        
 
         ### Define country groups to speed up the proceessing ###
 
@@ -1315,33 +1320,6 @@ class RMSDataHandle(object):
 
         self.trajectory_db.removeTrajectory(traj_reduced)
 
-    def checkAlreadyProcessed(self, matched_observations, verbose=False):
-        """
-        Check if a list of candidates has already been processed, and return only the new ones
-        """
-
-        # go through the candidates and check if they correspond to already-failed
-        candidate_trajectories=[]
-        for cand in matched_observations:
-            ref_dt = min([met_obs.reference_dt for _, met_obs, _ in cand])
-            ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in cand]))
-            ctry_list.sort()
-            ctries = '_'.join(ctry_list)
-            file_name = f'{ref_dt.timestamp():.6f}_{ctries}.pickle'
-            save_dir = self.candidate_dir
-            if verbose:
-                log.info(f'Candidate {file_name} contains {len(cand)} observations')
-
-            if os.path.isfile(os.path.join(save_dir, file_name)) or os.path.isfile(os.path.join(save_dir, 'processed', file_name)):
-                if verbose:
-                    log.info(f'candidate {file_name} already processed')
-                continue                
-
-            else:
-                candidate_trajectories.append(cand)
-    
-        return candidate_trajectories
-
     def checkCandIfFailed(self, candidate):
         """ Check if the given candidate has been processed with the same observations and has failed to be
             computed before.
@@ -1627,16 +1605,23 @@ class RMSDataHandle(object):
     def saveCandidates(self, candidate_trajectories, verbose=False):
         num_saved = 0
         for matched_observations in candidate_trajectories:
+
             ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
             ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
             ctry_list.sort()
             ctries = '_'.join(ctry_list)
-            picklename = f'{ref_dt.timestamp():.6f}_{ctries}.pickle'
 
-            if verbose:
-                log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
-            if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose):
-                num_saved += 1
+            cand_id = f'{ref_dt.timestamp():.6f}_{ctries}'
+            obs_ids = [met_obs.id for _, met_obs, _ in matched_observations]
+
+            if self.candidate_db.checkAndAddCand(cand_id, obs_ids):
+                picklename = f'{cand_id}.pickle'
+
+                if verbose:
+                    log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
+
+                if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose):
+                    num_saved += 1
 
         log.info("-----------------------")
         log.info(f'Saved {num_saved} candidates')
