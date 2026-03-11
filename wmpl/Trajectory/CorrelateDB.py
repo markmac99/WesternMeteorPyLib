@@ -60,14 +60,14 @@ class ObservationsDatabase():
         if verbose:
             log.info(f'opening database {db_full_name}')
         con = sqlite3.connect(db_full_name)
+        self.dbhandle = con
         con.execute('pragma journal_mode=wal')
         if purge_records:
             con.execute('drop table paired_obs')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
             con.execute("CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)")
-        con.commit()
-        self.dbhandle = con
+        self.commitObsDatabase()
 
     def _commitObsDatabase(self):
         """
@@ -85,9 +85,10 @@ class ObservationsDatabase():
         Close the database, making sure we commit any pending updates
         """
 
-        self._commitObsDatabase()
-        self.dbhandle.close()
-        self.dbhandle = None
+        if self.dbhandle:
+            self._commitObsDatabase()
+            self.dbhandle.close()
+            self.dbhandle = None
         return 
 
     def checkObsPaired(self, obs_id, verbose=False):
@@ -382,9 +383,10 @@ class TrajectoryDatabase():
 
         if verbose:
             log.info('commit: write to trajdb')
-        self._commitTrajDatabase()
-        self.dbhandle.close()
-        self.dbhandle = None
+        if self.dbhandle:
+            self._commitTrajDatabase()
+            self.dbhandle.close()
+            self.dbhandle = None
         return 
 
 
@@ -738,10 +740,10 @@ class CandidatesDatabase():
         """
         Close database, making sure we commit any pending updates
         """
-
-        self._commitCandDatabase()
-        self.dbhandle.close()
-        self.dbhandle = None
+        if self.dbhandle:
+            self._commitCandDatabase()
+            self.dbhandle.close()
+            self.dbhandle = None
         return 
 
     def checkAndAddCand(self, cand_id:str, ref_dt:float, obs_ids:list, verbose=False):

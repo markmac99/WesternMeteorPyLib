@@ -614,6 +614,9 @@ class RMSDataHandle(object):
     def closeObservationsDatabase(self):
         self.observations_db.closeObsDatabase()
         return 
+
+    def closeCandidatesDatabase(self):
+        self.candidates_db.closeCandDatabase()
     
     def closeTrajectoryDatabase(self):
         self.trajectory_db.closeTrajDatabase()
@@ -2160,6 +2163,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
                 if mcmode & MCMODE_CANDS:
                     dh.closeObservationsDatabase()
+                    dh.closeCandidatesDatabase()
 
             else:
                 # there were no datasets to process
