@@ -312,7 +312,6 @@ class TrajectoryDatabase():
         log.info(f'opening database {db_full_name}')
         con = sqlite3.connect(db_full_name)
         if purge_records:
-            log.info('purge: write to trajdb')
             con.execute('drop table if exists trajectories')
             con.execute('drop table if exists failed_trajectories')
             con.commit()
@@ -720,9 +719,9 @@ class CandidatesDatabase():
         if res.fetchone() is None:
             con.execute("CREATE TABLE candidates(cand_id VARCHAR UNIQUE, ref_dt REAL, obs_ids VARCHAR, status INTEGER)")
         con.commit()
+        self.dbhandle = con
         if keep > 0:
             self.purgeCands(keep=keep)
-        self.dbhandle = con
 
     def _commitCandDatabase(self):
         """
