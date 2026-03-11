@@ -1566,13 +1566,18 @@ class RMSDataHandle(object):
             # if the stop file has appeared, then move any pending candidates or phase1 files
 
             if os.path.isfile(os.path.join(node.dirpath, 'files','stop')):
-                log.info(f'{node.nodename} stopfile has appeared, moving data')
-                for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
-                    shutil.copy(full_name, self.candidate_dir)
-                    os.remove(full_name)
-                for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle')):
-                    shutil.copy(full_name, self.phase1_dir)
-                    os.remove(full_name) 
+                files_to_move = glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle'))
+                if len(files_to_move) > 0: 
+                    log.info(f'{node.nodename} stopfile has appeared, moving candidates')
+                    for full_name in files_to_move:
+                        shutil.copy(full_name, self.candidate_dir)
+                        os.remove(full_name)
+                files_to_move = glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle'))
+                if len(files_to_move) > 0: 
+                    log.info(f'{node.nodename} stopfile has appeared, moving phase1 files')
+                    for full_name in files_to_move:
+                        shutil.copy(full_name, self.phase1_dir)
+                        os.remove(full_name) 
             else:
                 # if the stop file isn't present and the nodes are idle, give them something to do
 
