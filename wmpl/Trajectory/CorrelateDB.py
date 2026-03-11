@@ -701,13 +701,14 @@ class CandidatesDatabase():
     A class to handle the sqlite candidates database transparently.
     """
 
-    def __init__(self, db_path, db_name='candidates.db', purge_records=False, verbose=False):
+    def __init__(self, db_path:str, db_name='candidates.db', keep=3, verbose=False):
         """
         Create a database instance
 
         Parameters:
         db_path         : path to the location of the database
         db_name         : name to use, typically candidates.db
+        keep            : number of weeks' data to keep. Default 3
 
         """
         db_full_name = os.path.join(db_path, f'{db_name}')
@@ -717,8 +718,10 @@ class CandidatesDatabase():
         con.execute('pragma journal_mode=wal')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='candidates'")
         if res.fetchone() is None:
-            con.execute("CREATE TABLE candidates(cand_id VARCHAR UNIQUE, obs_ids VARCHAR, status INTEGER)")
+            con.execute("CREATE TABLE candidates(cand_id VARCHAR UNIQUE, ref_dt REAL, obs_ids VARCHAR, status INTEGER)")
         con.commit()
+        if keep > 0:
+            self.purgeCands(keep=keep)
         self.dbhandle = con
 
     def _commitCandDatabase(self):
@@ -742,7 +745,7 @@ class CandidatesDatabase():
         self.dbhandle = None
         return 
 
-    def checkAndAddCand(self, cand_id, obs_ids, verbose=False):
+    def checkAndAddCand(self, cand_id:str, ref_dt:float, obs_ids:list, verbose=False):
         """
         Check and add a candidate if its not already there
 
@@ -760,14 +763,14 @@ class CandidatesDatabase():
             present = False
         else:
             present = True
-            obs_ids_str = json.dumps(';'.join(obs_ids))
-            self.dbhandle.execute(f"insert into candidates values ('{cand_id}','{obs_ids_str}',1)")
+            obs_ids_str = json.dumps(';'.join(list(set(obs_ids))))
+            self.dbhandle.execute(f"insert into candidates values ('{cand_id}',{ref_dt},'{obs_ids_str}',1)")
             self.dbhandle.commit()
         if verbose:
             log.info(f'{cand_id} is {"added" if present else "not added"}')
         return present
 
-    def getCandidate(self, cand_id, verbose=False):
+    def getCandidate(self, cand_id:str, verbose=False):
         """
         retrieve details of a candidate
 
@@ -786,6 +789,20 @@ class CandidatesDatabase():
         if verbose:
             log.info(f'{cand_id} contains {obs_ids}')
         return obs_ids
+
+
+    def purgeCands(self,keep=3):
+        """
+        purge old candidates after 'keep' weeks
+
+        Parameters:
+        keep    : weeks to keep data for, default 3
+        """
+        keep_dt = datetime.datetime.now().replace(tzinfo=datetime.timezone.utc) - datetime.timedelta(days=keep*7)
+        self.dbhandle.execute(f"delete from candidates where ref_dt < {keep_dt.timestamp()}")
+        self.dbhandle.commit()
+        return 
+    
 
 ##################################################################################
 # dummy classes for use in the above.
