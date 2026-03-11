@@ -1606,7 +1606,7 @@ class RMSDataHandle(object):
         num_saved = 0
         for matched_observations in candidate_trajectories:
 
-            ref_dt = min([met_obs.reference_dt for _, met_obs, _ in matched_observations])
+            ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
             ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
             ctry_list.sort()
             ctries = '_'.join(ctry_list)
@@ -1614,7 +1614,7 @@ class RMSDataHandle(object):
             cand_id = f'{ref_dt.timestamp():.6f}_{ctries}'
             obs_ids = [met_obs.id for _, met_obs, _ in matched_observations]
 
-            if self.candidate_db.checkAndAddCand(cand_id, obs_ids):
+            if self.candidate_db.checkAndAddCand(cand_id, ref_dt.timestamp(), obs_ids):
                 picklename = f'{cand_id}.pickle'
 
                 if verbose:
@@ -1622,6 +1622,7 @@ class RMSDataHandle(object):
 
                 if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose):
                     num_saved += 1
+        log.info(f'skipped {len(candidate_trajectories)-num_saved} as marked already-processed')
 
         log.info("-----------------------")
         log.info(f'Saved {num_saved} candidates')
