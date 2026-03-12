@@ -697,7 +697,7 @@ class TrajectoryDatabase():
 ############################################################
 
 
-class CandidatesDatabase():
+class CandidateDatabase():
     """
     A class to handle the sqlite candidates database transparently.
     """

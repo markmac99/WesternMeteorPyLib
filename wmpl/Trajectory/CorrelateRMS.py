@@ -29,7 +29,7 @@ from wmpl.Utils.OSTools import mkdirP
 from wmpl.Utils.Pickling import loadPickle, savePickle
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 from wmpl.Utils.remoteDataHandling import RemoteDataHandler
-from wmpl.Trajectory.CorrelateDB import ObservationsDatabase, TrajectoryDatabase, CandidatesDatabase
+from wmpl.Trajectory.CorrelateDB import ObservationsDatabase, TrajectoryDatabase, CandidateDatabase
 # from wmpl.Trajectory.Trajectory import Trajectory
 
 from wmpl.Trajectory.CorrelateEngine import MCMODE_CANDS, MCMODE_PHASE1, MCMODE_PHASE2, MCMODE_ALL, MCMODE_BOTH
@@ -504,7 +504,7 @@ class RMSDataHandle(object):
 
         self.candidate_db = None
         if mcmode == MCMODE_CANDS:
-            self.candidate_db = CandidatesDatabase(db_dir)
+            self.candidate_db = CandidateDatabase(db_dir)
         
 
         ### Define country groups to speed up the proceessing ###
@@ -616,7 +616,7 @@ class RMSDataHandle(object):
         return 
 
     def closeCandidatesDatabase(self):
-        self.candidates_db.closeCandDatabase()
+        self.candidate_db.closeCandDatabase()
     
     def closeTrajectoryDatabase(self):
         self.trajectory_db.closeTrajDatabase()
@@ -1461,8 +1461,10 @@ class RMSDataHandle(object):
                 candidate_trajectories.append(loadedpickle)
 
                 # now move the loaded file so we don't try to reprocess it 
+                full_name = os.path.join(save_path, fil)
                 procfile = os.path.join(procpath, fil)
-                os.rename(os.path.join(save_path, fil), procfile)
+                shutil.copy(full_name, procfile)
+                os.remove(full_name)
 
             except Exception: 
                 log.info(f'Candidate {fil} went away, probably picked up by another process')
