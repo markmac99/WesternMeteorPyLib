@@ -67,7 +67,7 @@ class ObservationsDatabase():
         res = con.execute("SELECT name FROM sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
             con.execute("CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)")
-        self.commitObsDatabase()
+        self._commitObsDatabase()
 
     def _commitObsDatabase(self):
         """
