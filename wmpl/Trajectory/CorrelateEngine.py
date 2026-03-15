@@ -495,6 +495,10 @@ class TrajectoryCorrelator(object):
             np.radians(pp.lon), pp.elev, meastype=1, station_id=pp.station_code, magnitudes=mag_data, 
             ignore_list=ignore_list, fov_beg=met.fov_beg, fov_end=met.fov_end, comment=comment)
 
+        # we seem to have two variables for observation id - need to tidy up this!
+        obs.id = met.id if hasattr(met, 'id') else None
+        obs.obs_id = obs.id
+
         return obs
 
 
@@ -559,8 +563,8 @@ class TrajectoryCorrelator(object):
                 or (ht2_end < self.traj_constraints.min_end_ht):
 
             log.info("Meteor heights outside allowed range!")
-            log.info("H1_beg: {:.2f}, H1_end: {:.2f}".format(ht1_beg, ht1_end))
-            log.info("H2_beg: {:.2f}, H2_end: {:.2f}".format(ht2_beg, ht2_end))
+            log.info("   H1_beg: {:.2f}, H1_end: {:.2f}".format(ht1_beg, ht1_end))
+            log.info("   H2_beg: {:.2f}, H2_end: {:.2f}".format(ht2_beg, ht2_end))
 
             return None
 
@@ -664,14 +668,12 @@ class TrajectoryCorrelator(object):
             # Run the solver
             try:
                 traj_status = traj.run()
-
             # If solving has failed, stop solving the trajectory
             except ValueError as e:
                 log.info("Error during trajectory estimation!")
                 print(e)
                 # TODO do we need to add the trajectory to the failed traj database here? 
                 return False
-
 
             # Reject bad observations until a stable set is found, but only if there are more than 2    
             #   stations. Only one station will be rejected at one point in time
@@ -828,7 +830,7 @@ class TrajectoryCorrelator(object):
                     for obs in traj_status.observations:
                         traj.infillWithObs(obs)
                         if not obs.ignore_station:
-                            log.info(f'Adding {obs.station_id}')
+                            log.info(f'Adding {obs.obs_id}')
 
                     log.info("")
                     active_stns = len([obs for obs in traj.observations if not obs.ignore_station])
@@ -871,6 +873,9 @@ class TrajectoryCorrelator(object):
                 log.info(f"Trajectory at {ref_dt.isoformat()} skipped and added to fails!")
                 self.dh.addTrajectory(traj, failed_jdt_ref=jdt_ref, verbose=verbose)
                 return False
+
+            # restore the obs ids
+            traj_status.obs_ids = [obs.obs_id for obs in traj_status.observations]
 
             # If there are only two stations, make sure to reject solutions which have stations with 
             #   residuals higher than the maximum limit
@@ -959,6 +964,7 @@ class TrajectoryCorrelator(object):
                 # Reinitialize the observations, rejecting ignored stations
                 for obs in obs_selected:
                     if not obs.ignore_station:
+                        log.info(f'obs_id {obs.obs_id}')
                         traj.infillWithObs(obs)
 
 
@@ -1381,7 +1387,6 @@ class TrajectoryCorrelator(object):
                                 # Init observation object using the new meteor observation
                                 obs_new = self.initObservationsObject(met_obs, platepar, 
                                     ref_dt=jd2Date(traj_reduced.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc))
-                                obs_new.id = met_obs.id
                                 obs_new.station_code = met_obs.station_code
                                 obs_new.mean_dt = met_obs.mean_dt
 
@@ -1418,11 +1423,11 @@ class TrajectoryCorrelator(object):
                             # If there are any good new observations, add them to the trajectory and re-run the solution
                             if candidate_observations:
 
-                                log.info("Recomputing trajectory with new observations from stations:")
+                                log.info("Recomputing trajectory with new observations:")
 
                                 # Add new observations to the trajectory object
                                 for obs_new, _ in candidate_observations:
-                                    log.info(obs_new.station_id)
+                                    log.info(f'  {obs_new.obs_id}')
                                     traj_full.infillWithObs(obs_new)
 
 
@@ -1614,7 +1619,8 @@ class TrajectoryCorrelator(object):
 
                 log.info("")
                 log.info("-----------------------")
-                log.info(f'processing {"candidate" if mcmode==MCMODE_PHASE1 else "trajectory"} {i+1}/{num_traj}')
+                cand_id = self.dh.getCandidateId(matched_observations) if mcmode==MCMODE_PHASE1 else ''
+                log.info(f'processing {"candidate" if mcmode==MCMODE_PHASE1 else "trajectory"} {cand_id} {i+1}/{num_traj}')
 
                 # if mcmode is not 2, prepare to calculate the intersecting planes solutions
                 if mcmode != MCMODE_PHASE2:
@@ -1674,10 +1680,9 @@ class TrajectoryCorrelator(object):
 
                     # Print info about observations which are being solved
                     log.info("")
-                    log.info("Observations:")
-                    for entry in matched_observations:
-                        obs, met_obs, _ = entry
-                        log.info(f'{met_obs.station_code} - {met_obs.mean_dt} - {obs.ignore_station}')
+                    log.info("Observations and ignore flag:")
+                    for obs, _, _ in matched_observations:
+                        log.info(f'   {obs.obs_id} - {obs.ignore_station}')
 
 
 
@@ -1693,6 +1698,7 @@ class TrajectoryCorrelator(object):
 
                         failed_traj = self.initTrajectory(jdt_ref, 0, verbose=verbose)
                         for obs_temp, met_obs, _ in matched_observations:
+                            log.info(f'obs_id {obs_temp.obs_id} id {obs_temp.id}')
                             failed_traj.infillWithObs(obs_temp)
 
                         t0 = min([obs.time_data[0] for obs in failed_traj.observations if (not obs.ignore_station) 
@@ -1743,8 +1749,10 @@ class TrajectoryCorrelator(object):
                         obs_temp.time_data += (jdt_ref_curr - jdt_ref)*86400
                         # we have normalised the time data to jdt_ref, now we need to reset jdt_ref for each obs too
                         obs_temp.jdt_ref = jdt_ref 
-
+                        obs_temp.obs_id = obs_temp.id
                         traj.infillWithObs(obs_temp)
+
+                    traj.obs_ids = [obs.obs_id for obs_temp, _,_ in matched_observations]
 
                     ### Recompute the reference JD and all times so that the first time starts at 0 ###
 

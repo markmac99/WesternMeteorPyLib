@@ -146,10 +146,16 @@ class TrajectoryReduced(object):
             if hasattr(traj, 'traj_id'):
                 self.traj_id = traj.traj_id
 
+            if hasattr(traj, 'obs_ids'):
+                self.obs_ids = traj.obs_ids
+            else:
+                self.obs_ids = None
+
         # Load values from a dictionary
         else:
+            if not hasattr(json_dict, 'obs_ids'):
+                json_dict['obs_ids'] = None
             self.__dict__ = json_dict
-
 
 
 class DatabaseJSON(object):
@@ -213,7 +219,6 @@ class DatabaseJSON(object):
                     trajectories_obj_dict = {}
                     for traj_json in traj_dict:
                         traj_reduced_tmp = TrajectoryReduced(None, json_dict=traj_dict[traj_json])
-
                         trajectories_obj_dict[traj_reduced_tmp.jdt_ref] = traj_reduced_tmp
 
                     # Set the trajectory dictionary
@@ -355,6 +360,7 @@ class MeteorObsRMS(object):
         checksum = int(np.sum([entry.x for entry in self.data]) % 10000)
         self.id = "{:s}_{:s}_{:04d}".format(self.station_code, self.mean_dt.strftime("%Y%m%d-%H%M%S.%f"), 
             checksum)
+        self.obs_id = self.id
 
 
 
@@ -616,7 +622,8 @@ class RMSDataHandle(object):
         return 
 
     def closeCandidatesDatabase(self):
-        self.candidate_db.closeCandDatabase()
+        if self.candidate_db:
+            self.candidate_db.closeCandDatabase()
     
     def closeTrajectoryDatabase(self):
         self.trajectory_db.closeTrajDatabase()
@@ -1641,6 +1648,15 @@ class RMSDataHandle(object):
         else:
             status = False
         return status
+
+    def getCandidateId(self, matched_observations, verbose=False):
+        ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
+        ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
+        ctry_list.sort()
+        ctries = '_'.join(ctry_list)
+        cand_id = f'{ref_dt.timestamp():.6f}_{ctries}'
+        return cand_id
+
     
     def saveCandidates(self, candidate_trajectories, verbose=False):
         """
@@ -1654,13 +1670,8 @@ class RMSDataHandle(object):
         """
         num_saved = 0
         for matched_observations in candidate_trajectories:
-
+            cand_id = self.getCandidateId(matched_observations)
             ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
-            ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
-            ctry_list.sort()
-            ctries = '_'.join(ctry_list)
-
-            cand_id = f'{ref_dt.timestamp():.6f}_{ctries}'
             obs_ids = [met_obs.id for _, met_obs, _ in matched_observations]
 
             if self.candidate_db.checkAndAddCand(cand_id, ref_dt.timestamp(), obs_ids):

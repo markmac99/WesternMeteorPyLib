@@ -162,7 +162,7 @@ class ObservationsDatabase():
         Parameters:
         met_obs_list    : a list of observation IDs
         """
-        obs_ids_str = ','.join(obs_ids)
+        obs_ids_str = ','.join(f"'{id}'" for id in obs_ids)
 
         if verbose:
             log.info(f'unpairing {obs_ids_str}')
@@ -341,6 +341,7 @@ class TrajectoryDatabase():
                         rend_lat REAL, 
                         rend_lon REAL,
                         rend_ele REAL,
+                        obs_ids VARCHAR,
                         status INTEGER) """)
 
         res = con.execute("SELECT name FROM sqlite_master WHERE name='failed_trajectories'")
@@ -359,6 +360,7 @@ class TrajectoryDatabase():
                         phase_1_only INTEGER,
                         v_init REAL,
                         gravity_factor REAL,
+                        obs_ids VARCHAR,
                         status INTEGER) """)
                         
         con.commit()
@@ -482,6 +484,7 @@ class TrajectoryDatabase():
             v_init = 0 if traj_reduced.v_init is None else traj_reduced.v_init
             radiant_eci_mini = [0,0,0] if traj_reduced.radiant_eci_mini is None else traj_reduced.radiant_eci_mini
             state_vect_mini = [0,0,0] if traj_reduced.state_vect_mini is None else traj_reduced.state_vect_mini
+            obs_ids = 'None' if traj_reduced.obs_ids is None else traj_reduced.obs_ids
 
             sql_str = (f'insert or replace into failed_trajectories values ('
                         f"{traj_reduced.jdt_ref}, '{traj_id}', '{traj_file_path}',"
@@ -489,8 +492,10 @@ class TrajectoryDatabase():
                         f"'{json.dumps(traj_reduced.ignored_stations)}',"
                         f"'{json.dumps(radiant_eci_mini)}',"
                         f"'{json.dumps(state_vect_mini)}',"
-                        f"0,{v_init},{traj_reduced.gravity_factor},1)")
+                        f"0,{v_init},{traj_reduced.gravity_factor},"
+                        f"'{json.dumps(obs_ids)}',1)")
         else:
+            obs_ids = 'None' if traj_reduced.obs_ids is None else traj_reduced.obs_ids
             sql_str = (f'insert or replace into trajectories values ('
                         f"{traj_reduced.jdt_ref}, '{traj_reduced.traj_id}', '{traj_file_path}',"
                         f"'{json.dumps(traj_reduced.participating_stations)}',"
@@ -501,7 +506,8 @@ class TrajectoryDatabase():
                         f"{traj_reduced.v0z},{traj_reduced.v_avg},"
                         f"{traj_reduced.rbeg_jd},{traj_reduced.rend_jd},"
                         f"{traj_reduced.rbeg_lat},{traj_reduced.rbeg_lon},{traj_reduced.rbeg_ele},"
-                        f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},1)")
+                        f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},"
+                        f"'{json.dumps(obs_ids)}',1)")
 
         sql_str = sql_str.replace('nan','"NaN"')
 
@@ -564,7 +570,8 @@ class TrajectoryDatabase():
                          'v0z': rw[10], 'v_avg': rw[11], 
                          'rbeg_jd': rw[12], 'rend_jd': rw[13], 
                          'rbeg_lat': rw[14], 'rbeg_lon': rw[15], 'rbeg_ele': rw[16], 
-                         'rend_lat': rw[17], 'rend_lon': rw[18], 'rend_ele': rw[19]                        
+                         'rend_lat': rw[17], 'rend_lon': rw[18], 'rend_ele': rw[19],
+                         'obs_ids': json.loads(rw[20])
                          }
             
             trajs.append(json_dict)
@@ -587,17 +594,17 @@ class TrajectoryDatabase():
         jdt_start, jdt_end = jdt_range
         table_name = 'failed_trajectories' if failed else 'trajectories'
         if not jdt_start:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} where status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} where status=1")
             rows = cur.fetchall()
         elif not jdt_end:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref={jdt_start} and status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} WHERE jdt_ref={jdt_start} and status=1")
             rows = cur.fetchall()
         else:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1")
             rows = cur.fetchall()
         trajs = []
         for rw in rows:
-            trajs.append({'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2])})
+            trajs.append({'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2]), 'obs_ids':json.loads(rw[3])})
         return trajs
 
     def archiveTrajDatabase(self, db_path, arch_prefix, archdate_jd):
@@ -764,7 +771,7 @@ class CandidateDatabase():
             present = False
         else:
             present = True
-            obs_ids_str = json.dumps(';'.join(list(set(obs_ids))))
+            obs_ids_str = json.dumps(list(set(obs_ids)))
             self.dbhandle.execute(f"insert into candidates values ('{cand_id}',{ref_dt},'{obs_ids_str}',1)")
             self.dbhandle.commit()
         if verbose:
@@ -786,7 +793,7 @@ class CandidateDatabase():
         cur = self.dbhandle.execute(f"SELECT * FROM candidates WHERE cand_id='{cand_id}' and status=1")
         rw = cur.fetchone()
         if rw is not None:
-            obs_ids= rw[1].split(',')
+            obs_ids= json.loads(rw[1])
         if verbose:
             log.info(f'{cand_id} contains {obs_ids}')
         return obs_ids
