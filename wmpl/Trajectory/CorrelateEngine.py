@@ -1699,6 +1699,8 @@ class TrajectoryCorrelator(object):
                         failed_traj = self.initTrajectory(jdt_ref, 0, verbose=verbose)
                         for obs_temp, met_obs, _ in matched_observations:
                             failed_traj.infillWithObs(obs_temp)
+                            
+                        failed_traj.obs_ids = [obs.obs_id for obs_temp, _,_ in matched_observations]                            
 
                         t0 = min([obs.time_data[0] for obs in failed_traj.observations if (not obs.ignore_station) 
                             or (not np.all(obs.ignore_list))])
