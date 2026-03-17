@@ -342,6 +342,7 @@ class TrajectoryDatabase():
                         rend_lon REAL,
                         rend_ele REAL,
                         obs_ids VARCHAR,
+                        ign_obs_ids VARCHAR,
                         status INTEGER) """)
 
         res = con.execute("SELECT name FROM sqlite_master WHERE name='failed_trajectories'")
@@ -361,6 +362,7 @@ class TrajectoryDatabase():
                         v_init REAL,
                         gravity_factor REAL,
                         obs_ids VARCHAR,
+                        ign_obs_ids VARCHAR,
                         status INTEGER) """)
                         
         con.commit()
@@ -485,6 +487,7 @@ class TrajectoryDatabase():
             radiant_eci_mini = [0,0,0] if traj_reduced.radiant_eci_mini is None else traj_reduced.radiant_eci_mini
             state_vect_mini = [0,0,0] if traj_reduced.state_vect_mini is None else traj_reduced.state_vect_mini
             obs_ids = 'None' if traj_reduced.obs_ids is None else traj_reduced.obs_ids
+            ign_obs_ids = 'None' if traj_reduced.ign_obs_ids is None else traj_reduced.ign_obs_ids
 
             sql_str = (f'insert or replace into failed_trajectories values ('
                         f"{traj_reduced.jdt_ref}, '{traj_id}', '{traj_file_path}',"
@@ -493,7 +496,8 @@ class TrajectoryDatabase():
                         f"'{json.dumps(radiant_eci_mini)}',"
                         f"'{json.dumps(state_vect_mini)}',"
                         f"0,{v_init},{traj_reduced.gravity_factor},"
-                        f"'{json.dumps(obs_ids)}',1)")
+                        f"'{json.dumps(obs_ids)}',",
+                        f"'{json.dumps(ign_obs_ids)}',1)")
         else:
             obs_ids = 'None' if traj_reduced.obs_ids is None else traj_reduced.obs_ids
             sql_str = (f'insert or replace into trajectories values ('
@@ -507,7 +511,8 @@ class TrajectoryDatabase():
                         f"{traj_reduced.rbeg_jd},{traj_reduced.rend_jd},"
                         f"{traj_reduced.rbeg_lat},{traj_reduced.rbeg_lon},{traj_reduced.rbeg_ele},"
                         f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},"
-                        f"'{json.dumps(obs_ids)}',1)")
+                        f"'{json.dumps(obs_ids)}',",
+                        f"'{json.dumps(ign_obs_ids)}',1)")
 
         sql_str = sql_str.replace('nan','"NaN"')
 
@@ -571,7 +576,7 @@ class TrajectoryDatabase():
                          'rbeg_jd': rw[12], 'rend_jd': rw[13], 
                          'rbeg_lat': rw[14], 'rbeg_lon': rw[15], 'rbeg_ele': rw[16], 
                          'rend_lat': rw[17], 'rend_lon': rw[18], 'rend_ele': rw[19],
-                         'obs_ids': json.loads(rw[20])
+                         'obs_ids': json.loads(rw[20]), 'ign_obs_ids': json.loads(rw[21]),
                          }
             
             trajs.append(json_dict)
