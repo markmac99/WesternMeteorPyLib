@@ -875,7 +875,8 @@ class TrajectoryCorrelator(object):
                 return False
 
             # restore the obs ids
-            traj_status.obs_ids = [obs.obs_id for obs in traj_status.observations]
+            traj_status.obs_ids = [obs.obs_id for obs in traj_status.observations if obs.ignore_station is False]
+            traj_status.ign_obs_ids = [obs.obs_id for obs in traj_status.observations if obs.ignore_station is True]
 
             # If there are only two stations, make sure to reject solutions which have stations with 
             #   residuals higher than the maximum limit
@@ -1700,7 +1701,7 @@ class TrajectoryCorrelator(object):
                         for obs_temp, met_obs, _ in matched_observations:
                             failed_traj.infillWithObs(obs_temp)
                             
-                        failed_traj.obs_ids = [obs.obs_id for obs_temp, _,_ in matched_observations]                            
+                        failed_traj.obs_ids = [obs_temp.obs_id for obs_temp, _,_ in matched_observations]
 
                         t0 = min([obs.time_data[0] for obs in failed_traj.observations if (not obs.ignore_station) 
                             or (not np.all(obs.ignore_list))])
@@ -1753,7 +1754,8 @@ class TrajectoryCorrelator(object):
                         obs_temp.obs_id = obs_temp.id
                         traj.infillWithObs(obs_temp)
 
-                    traj.obs_ids = [obs.obs_id for obs_temp, _,_ in matched_observations]
+                    traj.obs_ids = [obs.obs_id for obs, _,_ in matched_observations if obs.ignore_station is False]
+                    traj.ign_obs_ids = [obs.obs_id for obs, _,_ in matched_observations if obs.ignore_station is True]
 
                     ### Recompute the reference JD and all times so that the first time starts at 0 ###
 
