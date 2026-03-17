@@ -146,10 +146,12 @@ class TrajectoryReduced(object):
             if hasattr(traj, 'traj_id'):
                 self.traj_id = traj.traj_id
 
+            self.obs_ids = None
             if hasattr(traj, 'obs_ids'):
                 self.obs_ids = traj.obs_ids
-            else:
-                self.obs_ids = None
+            self.ign_obs_ids = None
+            if hasattr(traj, 'ign_obs_ids'):
+                self.ign_obs_ids = traj.ign_obs_ids
 
         # Load values from a dictionary
         else:
@@ -955,47 +957,16 @@ class RMSDataHandle(object):
         else:
             return False
 
-    def removeDeletedTrajectories(self, verbose=True):
-        """ Purge the database of any trajectories that no longer exist on disk.
-            These can arise because the monte-carlo stage may update the data. 
-        """
-
-        if not os.path.isdir(self.output_dir):
-            return 
-        if self.trajectory_db is None:
-            return 
-        
-        log.info("  Removing deleted trajectories from: " + self.output_dir)
-        if self.dt_range is not None:
-            log.info("  Datetime range: {:s} - {:s}".format(
-                self.dt_range[0].strftime("%Y-%m-%d %H:%M:%S"), 
-                self.dt_range[1].strftime("%Y-%m-%d %H:%M:%S")))
-            
-        jdt_range = [datetime2JD(self.dt_range[0]), datetime2JD(self.dt_range[1])]
-
-        traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
-        i = 0
-        for traj in traj_list:
-            if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
-                if verbose:
-                    log.info(f'removing traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
-                self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
-                i += 1
-        log.info(f'removed {i} deleted trajectories')
-
-        return 
-
-    def loadComputedTrajectories(self, dt_range=None):
-        """ Load already estimated trajectories from disk within a date range. 
+    def updateTrajectoryDatabase(self, dt_range=None):
+        """ 
+        Update the trajectory database to make sure its in line with whats on disk,
+        and at the same time checking for and removing any duplicate trajectories. 
 
         Arguments:
             dt_range: [datetime, datetime] range of dates to load data for
         """
-        traj_dir_path = os.path.join(self.output_dir, OUTPUT_TRAJ_DIR)
-        # defend against the case where there are no existing trajectories and traj_dir_path doesn't exist
-        if not os.path.isdir(traj_dir_path):
-            return
-
+        if not os.path.isdir(self.output_dir):
+            return 
         if self.trajectory_db is None:
             return 
         
@@ -1004,42 +975,43 @@ class RMSDataHandle(object):
         else:
             dt_beg, dt_end = dt_range
 
-        log.info("  Loading found trajectories from: " + traj_dir_path)
+        log.info("Updating trajectory database...")
         if self.dt_range is not None:
-            log.info("  Datetime range: {:s} - {:s}".format(
-                dt_beg.strftime("%Y-%m-%d %H:%M:%S"), 
-                dt_end.strftime("%Y-%m-%d %H:%M:%S")))
+            log.info(f"  Datetime range: {dt_beg.strftime('%Y-%m-%d %H:%M:%S')} - {dt_end.strftime('%Y-%m-%d %H:%M:%S')}")
+        log.info("  Removing deleted trajectories from: " + self.output_dir)
+            
+        jdt_range = [datetime2JD(dt_beg), datetime2JD(dt_end)]
 
+        traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
+        i = 0
+        for traj in traj_list:
+            if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
+                if verbose:
+                    log.info(f'    removing traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
+                self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
+                i += 1
+        log.info(f'  removed {i} deleted trajectories')
+
+        traj_dir_path = os.path.join(self.output_dir, OUTPUT_TRAJ_DIR)
+        # defend against the case where there are no existing trajectories and traj_dir_path doesn't exist
+        
+        log.info("  Adding found trajectories from: " + traj_dir_path)
         counter = 0
 
         # Construct a list of all ddirectory paths to visit. The trajectory directories are sorted in 
         # YYYY/YYYYMM/YYYYMMDD, so visit them in that order to check if they are in the datetime range
         dir_paths = []
 
-        #iterate over the days in the range
-        jdt_beg = int(np.floor(datetime2JD(dt_beg)))
-        jdt_end = int(np.ceil(datetime2JD(dt_end)))
-
-        yyyy = 0
-        mm = 0
-        dd = 0
         start_time = datetime.datetime.now()
-        for jdt in range(jdt_beg, jdt_end + 1):
 
-            curr_dt = jd2Date(jdt, dt_obj=True)
-            if curr_dt.year != yyyy:
-                yyyy = curr_dt.year
-                #log.info("- year    " + str(yyyy))
+        #iterate over the days in the range
+        dt_diff = max((dt_end - dt_beg).days, 1) + 2
 
-            if curr_dt.month != mm:
-                mm = curr_dt.month
-                yyyymm = f'{yyyy}{mm:02d}'
-                #log.info("  - month " + str(yyyymm))
-
-            if curr_dt.day != dd:
-                dd = curr_dt.day
-                yyyymmdd = f'{yyyy}{mm:02d}{dd:02d}'
-                #log.info("    - day " + str(yyyymmdd))
+        for d in range(dt_diff):
+            curr_dt = dt_beg + datetime.timedelta(days=d)
+            yyyy = curr_dt.year
+            yyyymm = f'{yyyy}{curr_dt.month:02d}'
+            yyyymmdd = f'{yyyy}{curr_dt.month:02d}{curr_dt.day:02d}'
 
             yyyymmdd_dir_path = os.path.join(traj_dir_path, f'{yyyy}', f'{yyyymm}', f'{yyyymmdd}')
 
@@ -1060,7 +1032,7 @@ class RMSDataHandle(object):
 
                                 # Print every 1000th trajectory
                                 if counter % 1000 == 0:
-                                    log.info(f"  Loaded {counter:6d} trajectories")
+                                    log.info(f"   Loaded {counter:6d} trajectories")
                                 counter += 1
 
                         dir_paths.append(full_traj_dir)
@@ -2138,11 +2110,12 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                         log.info(f'loaded {len(dh.unpaired_observations)} observations')
 
                     if mcmode != MCMODE_PHASE2:
-                        # remove any trajectories that no longer exist on disk
-                        dh.removeDeletedTrajectories()
-                        # load computed trajectories from disk into sqlite
-                        dh.loadComputedTrajectories(dt_range=(bin_beg, bin_end))
-                        # move any legacy failed traj into sqlite
+
+                        # Update the trajectory database, removing any that no longer exist on disk,
+                        # adding any that exist on disk but are missing in the database, and 
+                        # removing any duplicates from both disk and database
+                       
+                        dh.updateTrajectoryDatabase(dt_range=(bin_beg, bin_end))
 
 
                     # Run the trajectory correlator
