@@ -537,6 +537,24 @@ class TrajectoryDatabase():
         self.dbhandle.commit()
 
         return True
+    
+    def removeTrajectoryById(self, traj_id, failed=False, verbose=False):
+        """
+        Mark a trajectory unsolved
+        If an entry exists, update the status to 0. 
+
+        Parameters:
+        traj_id         : a trajectory ID
+        failed          : boolean, if true then remove from the fails list
+        """
+        if verbose:
+            log.info(f'removing {traj_id}')
+        table_name = 'failed_trajectories' if failed else 'trajectories'
+
+        self.dbhandle.execute(f"update {table_name} set status=0 where traj_id='{traj_id}'")
+        self.dbhandle.commit()
+
+        return True
 
     
     def getTrajectories(self, output_dir, jdt_range, failed=False, verbose=False):
@@ -599,17 +617,18 @@ class TrajectoryDatabase():
         jdt_start, jdt_end = jdt_range
         table_name = 'failed_trajectories' if failed else 'trajectories'
         if not jdt_start:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} where status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} where status=1")
             rows = cur.fetchall()
         elif not jdt_end:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} WHERE jdt_ref={jdt_start} and status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref={jdt_start} and status=1")
             rows = cur.fetchall()
         else:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1")
             rows = cur.fetchall()
         trajs = []
         for rw in rows:
-            trajs.append({'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2]), 'obs_ids':json.loads(rw[3])})
+            trajs.append({'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2]), 
+                'obs_ids':json.loads(rw[3]), 'ign_obs_ids':json.loads(rw[4])})
         return trajs
 
     def archiveTrajDatabase(self, db_path, arch_prefix, archdate_jd):
