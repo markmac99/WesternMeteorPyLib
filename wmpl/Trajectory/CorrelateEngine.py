@@ -965,7 +965,7 @@ class TrajectoryCorrelator(object):
                 # Reinitialize the observations, rejecting ignored stations
                 for obs in obs_selected:
                     if not obs.ignore_station:
-                        log.info(f'obs_id {obs.obs_id}')
+                        #log.info(f'adding obs_id {obs.obs_id}')
                         traj.infillWithObs(obs)
 
 
