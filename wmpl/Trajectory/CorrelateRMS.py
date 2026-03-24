@@ -21,6 +21,7 @@ import numpy as np
 import sys
 import signal
 import secrets
+import pandas as pd
 
 from wmpl.Formats.CAMS import loadFTPDetectInfo
 from wmpl.Trajectory.CorrelateEngine import TrajectoryCorrelator, TrajectoryConstraints, getMcModeStr
@@ -960,7 +961,7 @@ class RMSDataHandle(object):
     def updateTrajectoryDatabase(self, dt_range=None):
         """ 
         Update the trajectory database to make sure its in line with whats on disk,
-        and at the same time checking for and removing any duplicate trajectories. 
+        at the same time checking for and removing any duplicate trajectories. 
 
         Arguments:
             dt_range: [datetime, datetime] range of dates to load data for
@@ -991,6 +992,61 @@ class RMSDataHandle(object):
                 self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
                 i += 1
         log.info(f'  removed {i} deleted trajectories')
+
+        #
+        # Now look for duplicate trajectories and ones with shared observations. In theory these should not exist
+        # but its possible for them to arise because during distributed calculations, candidates may be found before
+        # the last solver run has completed.
+        #
+        # lambda to use to find traj with common obs
+        def atleastOneObs(obs_ids,next_obs_ids):
+            if obs_ids is None or next_obs_ids is None:
+                return False
+            return any(i in next_obs_ids for i in obs_ids)
+
+        # create a dataframe and sort it by date. Duplicates will almost always have very similar dates
+        traj_df = pd.DataFrame(traj_list)
+        if len(traj_df) > 0:
+
+            # sort by date
+            traj_df.sort_values(by='jdt_ref', inplace=True)
+
+            # add a column containing the next trajectory's observations
+            traj_df['obs_ids_next'] = traj_df.obs_ids.shift(-1)
+
+            # get a list of any trajectories with exactly the same observations.
+            # Then iterate over the list, removing whichever one isn't on disk.
+            
+            same_obs = traj_df.query('obs_ids == obs_ids_next')
+            for idx,rw in same_obs.iterrows():
+                traj1 = loadPickle(*os.path.split(traj_df.iloc[idx].traj_file_path))
+                
+                if traj1.traj_id == rw.traj_id:
+                    log.info(f'removing duplicate trajectory {traj_df.iloc[idx+1].traj_id}')
+                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
+                else:
+                    log.info(f'removing duplicate trajectory {traj_df.iloc[idx].traj_id}')
+                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
+            
+            # get a list of trajectories which share at least one observation. 
+            # TODO Finish this
+            # The best thing to here might be to unpair all the obs and let the candidate finder find them on its next pass
+            # to be decided ! 
+
+            traj_df['overlapstats'] = traj_df.apply(lambda row: atleastOneObs(row.obs_ids, row.obs_ids_next), axis=1)
+            common_obs = traj_df[traj_df.overlapstats]
+
+            for idx,rw in common_obs.iterrows():
+
+                log.info(f'unpairing obs linked to mergeable events {traj_df.iloc[idx].traj_id} and {traj_df.iloc[idx+1].traj_id}')
+
+                traj1 = traj_df.iloc[idx]
+                traj2 = traj_df.iloc[idx+1]
+                combined_obs_ids = list(set(traj1.obs_ids + traj2.obs_ids + traj1.ign_obs_ids + traj2.ign_obs_ids))
+                self.observations_db.unpairObs(combined_obs_ids)
+
+        # Finally, scan the disk for trajectories that need to be added to the database.
+        # These can arise during distributed processing or phase2 analysis if the jdt_ref changes significantly.
 
         traj_dir_path = os.path.join(self.output_dir, OUTPUT_TRAJ_DIR)
         # defend against the case where there are no existing trajectories and traj_dir_path doesn't exist
@@ -1038,7 +1094,7 @@ class RMSDataHandle(object):
                         dir_paths.append(full_traj_dir)
 
         dur = (datetime.datetime.now() - start_time).total_seconds()
-        log.info(f"  Loaded {counter:6d} trajectories in {dur:.0f} seconds")
+        log.info(f"  Added {counter:6d} trajectories in {dur:.0f} seconds")
 
     def getComputedTrajectories(self, jd_beg, jd_end):
         """ Returns a list of computed trajectories between the Julian dates.
@@ -2130,12 +2186,14 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                             dh.closeTrajectoryDatabase()
                             dh.closeObservationsDatabase()
 
-                        dh.RemoteDatahandler.uploadToMaster(dh.output_dir, verbose=verbose)
 
-                        # truncate the tables here so they are clean for the next run
-                        if mcmode != MCMODE_PHASE2:
-                            dh.trajectory_db = TrajectoryDatabase(dh.db_dir, purge_records=True)
-                            dh.observations_db = ObservationsDatabase(dh.db_dir, purge_records=True)
+                        if dh.RemoteDatahandler.uploadToMaster(dh.output_dir, verbose=verbose):
+
+                            # if we successfully uploaded data, truncate the tables here so they are clean for the next run
+                            # otherwise do not truncate it, so we push it next time instead
+                            if mcmode != MCMODE_PHASE2:
+                                dh.trajectory_db = TrajectoryDatabase(dh.db_dir, purge_records=True)
+                                dh.observations_db = ObservationsDatabase(dh.db_dir, purge_records=True)
 
                     if dh.RemoteDatahandler and dh.RemoteDatahandler.mode == 'master':
                         # move any uploaded data and then check and rebalance any pending cands or phase1s
@@ -2172,7 +2230,10 @@ contain data folders. Data folders should have FTPdetectinfo files together with
             break
 
         else:
-
+            if dh.observations_db:
+                dh.closeObservationsDatabase()
+            if dh.trajectory_db:
+                dh.closeTrajectoryDatabase()
             # Otherwise wait to run AUTO_RUN_FREQUENCY hours after the beginning
             wait_time = (datetime.timedelta(hours=AUTO_RUN_FREQUENCY) 
                 - (datetime.datetime.now(datetime.timezone.utc) - t1)).total_seconds()
