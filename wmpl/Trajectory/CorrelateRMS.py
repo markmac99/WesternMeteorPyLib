@@ -1044,6 +1044,8 @@ class RMSDataHandle(object):
                 traj2 = traj_df.iloc[idx+1]
                 combined_obs_ids = list(set(traj1.obs_ids + traj2.obs_ids + traj1.ign_obs_ids + traj2.ign_obs_ids))
                 self.observations_db.unpairObs(combined_obs_ids)
+                self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
+                self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
 
         # Finally, scan the disk for trajectories that need to be added to the database.
         # These can arise during distributed processing or phase2 analysis if the jdt_ref changes significantly.
