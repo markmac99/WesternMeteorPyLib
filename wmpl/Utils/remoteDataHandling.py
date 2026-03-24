@@ -150,7 +150,8 @@ class RemoteDataHandler():
                 time.sleep(1)
         if i == 10:
             log.warning(f'upload of {local_name} failed after 10 retries')
-        return 
+            return False
+        return True
 
     ########################################################    
     # functions used by the client nodes
@@ -227,6 +228,9 @@ class RemoteDataHandler():
         if not self.initialised or not self.getSFTPConnection(verbose=verbose):
             return 
 
+        # flag to indicate success. Any upload failures will set this to False
+        success_flag = True
+
         for pth in ['files', 'files/candidates', 'files/phase1', 'files/trajectories', 
                     'files/candidates/processed','files/phase1/processed']:
             try:
@@ -237,60 +241,109 @@ class RemoteDataHandler():
 
         phase1_dir = os.path.join(source_dir, 'phase1')
         if os.path.isdir(phase1_dir):
+
             # upload any phase1 trajectories
             i=0
             proc_dir = os.path.join(phase1_dir, 'processed')
             os.makedirs(proc_dir, exist_ok=True)
+
             for fil in os.listdir(phase1_dir):
                 local_name = os.path.join(phase1_dir, fil)
                 if os.path.isdir(local_name):
                     continue
                 remname = f'files/phase1/{fil}'
+
                 if verbose:
                     log.info(f'uploading {local_name} to {remname}')
-                self.putWithRetry(local_name, remname)
-                if os.path.isfile(os.path.join(proc_dir, fil)):
-                    os.remove(os.path.join(proc_dir, fil))
-                shutil.move(local_name, proc_dir)
-                i += 1
+
+                # If the upload is successful, move the local file to 'processed'
+                # Otherwise set the success flag to false 
+
+                if self.putWithRetry(local_name, remname): 
+
+                    if os.path.isfile(os.path.join(proc_dir, fil)):
+                        os.remove(os.path.join(proc_dir, fil))
+                    shutil.move(local_name, proc_dir)
+                    i += 1
+
+                else:
+                    success_flag = False
+
             if i > 0:
                 log.info(f'uploaded {i} phase1 solutions')
-        # now upload any data in the 'trajectories' folder, flattening it to make it simpler
+
+        # now upload any data in the 'trajectories' folder, flattening it to make it simpler to handle
         i=0
         if os.path.isdir(os.path.join(source_dir, 'trajectories')):
             traj_dir = f'{source_dir}/trajectories'
             for (dirpath, dirnames, filenames) in os.walk(traj_dir):
                 if len(filenames) > 0:
+
+                    # flag to indicate whether this specific trajectory upload succeeded
+                    traj_success_flag = True
+
                     rem_path = f'files/trajectories/{os.path.basename(dirpath)}'
                     try:
                         self.sftp_client.mkdir(rem_path)
                     except Exception:
                         pass
                     self.sftp_client.chmod(rem_path, 0o777)
+
+                    # upload all files in the folder. If any upload fails, set the traj sucess flag to false
                     for fil in filenames:
+
                         local_name = os.path.join(dirpath, fil)
                         rem_file = f'{rem_path}/{fil}'
+
                         if verbose:
                             log.info(f'uploading {local_name} to {rem_file}')
-                        self.putWithRetry(local_name, rem_file)
-                        i += 1
-            shutil.rmtree(traj_dir, ignore_errors=True)
+
+                        if self.putWithRetry(local_name, rem_file):
+                            i += 1
+                        else:
+                            traj_success_flag = False
+
+                    # if this trajectory uploaded, remove the local files
+                    # Otherwise set the overall status to False
+                    if traj_success_flag: 
+                        shutil.rmtree(dirpath, ignore_errors=True)
+                    else: 
+                        success_flag = traj_success_flag
+
+            
         if i > 0:
             log.info(f'uploaded {int(i/2)} trajectories')
 
-        # finally the databases
+        # if everything uploaded we can remove the entire 'trajectories' folder
+        if success_flag: 
+            shutil.rmtree(traj_dir, ignore_errors=True)
+
+        # finally the databases - upload these with a random name for uniqueness at the server side
+        # Again, if any upload fails mark the status False
         uuid_str = str(uuid.uuid4())
+
+        db_success_flag = True
         for fname in ['observations', 'trajectories']:
             local_name = os.path.join(source_dir, f'{fname}.db')
+
             if os.path.isfile(local_name):
                 rem_file = f'files/{fname}-{uuid_str}.db'
+
                 if verbose:
                     log.info(f'uploading {local_name} to {rem_file}')
-                self.putWithRetry(local_name, rem_file)
 
-        log.info('uploaded databases')
+                if not self.putWithRetry(local_name, rem_file):
+                    db_success_flag = False
+
+        if db_success_flag:
+            log.info('uploaded databases')
+        else:
+            log.warning('unable to upload at least one of the databases, will retry in next loop')
+            success_flag = db_success_flag
+
         self.closeSFTPConnection()
-        return
+
+        return success_flag
     
     def setStopFlag(self, verbose=False):
         if not self.initialised or not self.getSFTPConnection():
