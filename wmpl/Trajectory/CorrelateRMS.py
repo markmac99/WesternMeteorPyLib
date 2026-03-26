@@ -433,13 +433,17 @@ class RMSDataHandle(object):
         # Candidate directory, if running in create or load cands modes
         self.candidate_dir = os.path.join(self.output_dir, 'candidates')
         mkdirP(os.path.join(self.candidate_dir, 'processed'))
-        num_removed_cands = self.purgeProcessedData(os.path.join(self.candidate_dir, 'processed'), days_back=daysback, verbose=verbose)
-        log.info(f'removed {num_removed_cands} processed candidates')
 
         # Phase 1 trajectory pickle directory needed to reload previous results when running phase2.
         self.phase1_dir = os.path.join(self.output_dir, 'phase1')
         mkdirP(os.path.join(self.phase1_dir, 'processed'))
-        num_removed_ph1 = self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'), days_back=daysback, verbose=verbose)
+
+        # Clear down candidates older than daysback days to save space
+        num_removed_cands = self.purgeProcessedData(os.path.join(self.candidate_dir, 'processed'), days_back=daysback, verbose=verbose)
+        log.info(f'removed {num_removed_cands} processed candidates')
+
+        # Clear down phase1 older than 2x daysback days to save space 
+        num_removed_ph1 = self.purgeProcessedData(os.path.join(self.phase1_dir, 'processed'), days_back=daysback*2, verbose=verbose)
         log.info(f'removed {num_removed_ph1} processed phase1')
 
         # In a previous incarnation, if the solver crashed it could leave some `.pickle_processing files`.
@@ -567,7 +571,7 @@ class RMSDataHandle(object):
             self.RemoteDatahandler = None
 
     def purgeProcessedData(self, dir_path, days_back=14, verbose=False):
-        """ Purge processed candidate or phase1 data if it is older than 30 days. """
+        """ Purge processed candidate or phase1 data if it is older than a default of 14 days. """
 
         refdt = time.time() - days_back*86400
         num_removed = 0
@@ -1537,12 +1541,15 @@ class RMSDataHandle(object):
                         os.remove(f'{obsdb_path}-wal')
                         os.remove(f'{obsdb_path}-shm')
                     except Exception:
+                        log.warning(f'unable to fully merge the remote obs database {obsdb_path}')
                         pass
 
             
             for trajdb_path in glob.glob(os.path.join(node.dirpath,'files','trajectories*.db')):
                 if self.trajectory_db.mergeTrajDatabase(trajdb_path):
                     os.remove(trajdb_path)
+                else:
+                    log.warning(f'unable to fully merge the remote traj database {trajdb_path}')
 
             i = 0
             remote_trajdir = os.path.join(node.dirpath, 'files', 'trajectories')
@@ -1554,7 +1561,7 @@ class RMSDataHandle(object):
                         for src_name in os.listdir(src_path):
                             src_name = os.path.join(src_path, src_name)
                             if not os.path.isfile(src_name):
-                                log.info(f'{src_name} missing')
+                                log.warning(f'{src_name} missing')
                             else:
                                 os.makedirs(targ_path, exist_ok=True)
                                 shutil.copy(src_name, targ_path)
