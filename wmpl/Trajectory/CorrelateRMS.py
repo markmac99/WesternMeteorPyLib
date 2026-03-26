@@ -376,7 +376,8 @@ class PlateparDummy:
 
 
 class RMSDataHandle(object):
-    def __init__(self, dir_path, dt_range=None, db_dir=None, output_dir=None, mcmode=MCMODE_ALL, max_trajs=1000, verbose=False, archivemonths=3):
+    def __init__(self, dir_path, dt_range=None, db_dir=None, output_dir=None, mcmode=MCMODE_ALL, max_trajs=1000, 
+            verbose=False, archivemonths=3, auto=False):
         """ Handles data interfacing between the trajectory correlator and RMS data files on disk. 
     
         Arguments:
@@ -394,6 +395,8 @@ class RMSDataHandle(object):
         """
 
         self.mc_mode = mcmode
+
+        self.auto_mode = auto
 
         self.dir_path = dir_path
         # create the data directory. Of course, if the folder doesnt exist there is nothing to process
@@ -1028,10 +1031,10 @@ class RMSDataHandle(object):
                     log.info(f'removing duplicate trajectory {traj_df.iloc[idx].traj_id}')
                     self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
             
-            # get a list of trajectories which share at least one observation. 
-            # TODO Finish this
-            # The best thing to here might be to unpair all the obs and let the candidate finder find them on its next pass
-            # to be decided ! 
+            # get a list of trajectories which share at least one observation.
+            # These are candidates for being merged, so in auto-mode, we can unpair all the obs and 
+            # delete the traj, then let the candidate finder reanalyse on its next pass.
+            # in non-Auto mode, where there's only one pass, we'll have to leave both traj and let the user decide
 
             traj_df['overlapstats'] = traj_df.apply(lambda row: atleastOneObs(row.obs_ids, row.obs_ids_next), axis=1)
             common_obs = traj_df[traj_df.overlapstats]
@@ -1044,8 +1047,9 @@ class RMSDataHandle(object):
                 traj2 = traj_df.iloc[idx+1]
                 combined_obs_ids = list(set(traj1.obs_ids + traj2.obs_ids + traj1.ign_obs_ids + traj2.ign_obs_ids))
                 self.observations_db.unpairObs(combined_obs_ids)
-                self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
-                self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
+                if self.auto_mode:
+                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
+                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
 
         # Finally, scan the disk for trajectories that need to be added to the database.
         # These can arise during distributed processing or phase2 analysis if the jdt_ref changes significantly.
@@ -2088,9 +2092,8 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
         # Init the data handle
         dh = RMSDataHandle(
-            cml_args.dir_path, dt_range=event_time_range, 
-            db_dir=cml_args.dbdir, output_dir=cml_args.outdir,
-            mcmode=mcmode, max_trajs=max_trajs, verbose=verbose, archivemonths=cml_args.archivemonths)
+            cml_args.dir_path, dt_range=event_time_range, db_dir=cml_args.dbdir, output_dir=cml_args.outdir,
+            mcmode=mcmode, max_trajs=max_trajs, verbose=verbose, archivemonths=cml_args.archivemonths, auto=cml_args.auto)
         
         # If there is nothing to process and we're in Candidate mode, stop
         if not dh.processing_list and (mcmode & MCMODE_CANDS):
