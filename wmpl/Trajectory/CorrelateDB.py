@@ -220,7 +220,7 @@ class ObservationsDatabase():
         self.dbhandle.commit()
         return 
 
-    def copyObsJsonRecords(self, paired_obs, dt_range):
+    def copyObsJsonRecords(self, paired_obs, dt_range, max_days=14):
         """ 
         Copy recent data from the legacy Json database to the new database.
         By design this only copies at most the last seven days, but a date-range can be 
@@ -228,12 +228,12 @@ class ObservationsDatabase():
 
         Parameters:
         paired_obs  : a json list of paired observations from the old database
-        dt_range    : a date range to operate on - at most seven days duration
+        dt_range    : a date range to operate on - at most fourteen days duration
 
         """
         # only copy recent observations since 
         dt_end = dt_range[1]
-        dt_beg = max(dt_range[0], dt_end + datetime.timedelta(days=-7))
+        dt_beg = max(dt_range[0], dt_end + datetime.timedelta(days=-max_days))
 
         log.info('-----------------------------')
         log.info('moving recent observations to sqlite - this may take some time....')
@@ -250,7 +250,7 @@ class ObservationsDatabase():
                 obs_date = obs_date.replace(tzinfo=datetime.timezone.utc)
 
                 if obs_date >= dt_beg and obs_date < dt_end:
-                    self.addPairedObs(obs_id)
+                    self.addPairedObs(obs_id, datetime2JD(obs_date))
                     i += 1
                 if not i % 100000 and i != 0:
                     log.info(f'moved {i} observations')
@@ -480,8 +480,8 @@ class TrajectoryDatabase():
         # and remove windows-style path separators
         traj_file_path = traj_file_path.replace('\\','/')
 
-        obs_ids = 'None' if traj_reduced.obs_ids is None else traj_reduced.obs_ids
-        ign_obs_ids = 'None' if traj_reduced.ign_obs_ids is None else traj_reduced.ign_obs_ids
+        obs_ids = 'None' if not hasattr(traj_reduced, 'obs_ids') or traj_reduced.obs_ids is None else traj_reduced.obs_ids
+        ign_obs_ids = 'None' if not hasattr(traj_reduced, 'ign_obs_ids') or traj_reduced.ign_obs_ids is None else traj_reduced.ign_obs_ids
 
         if failed:
             # fixup possible bad values
@@ -662,7 +662,7 @@ class TrajectoryDatabase():
         self.dbhandle.commit()
         return 
 
-    def copyTrajJsonRecords(self, trajectories, dt_range, failed=True):
+    def copyTrajJsonRecords(self, trajectories, dt_range, failed=True, max_days=14):
         """
         Copy trajectories from the old Json database 
         We only copy recent failed traj records since if we ever run for an historic date
@@ -671,15 +671,15 @@ class TrajectoryDatabase():
         Parameters:
 
         trajectories    : json list of trajetories extracted from the old Json DB
-        dt_range:       : date range to use, at most seven days at a time
+        dt_range:       : date range to use, at most fourteen days at a time
         failed          : boolean, default true to move failed traj
 
         """
         jd_end = datetime2JD(dt_range[1])
-        jd_beg = max(datetime2JD(dt_range[0]), jd_end - 7)
+        jd_beg = max(datetime2JD(dt_range[0]), jd_end - max_days)
 
         log.info('moving recent failed trajectories to sqlite - this may take some time....')
-        log.info(f'observation date range {jd2Date(jd_beg, dt_obj=True).isoformat()} to {dt_range[1].isoformat()}')
+        log.info(f'trajectory date range {jd2Date(jd_beg, dt_obj=True).isoformat()} to {dt_range[1].isoformat()}')
 
         keylist = [k for k in trajectories.keys() if float(k) >= jd_beg and float(k) <= jd_end]
         i = 0 # just in case there aren't any trajectories to move
