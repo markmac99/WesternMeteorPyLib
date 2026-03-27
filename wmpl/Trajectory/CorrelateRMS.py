@@ -1572,8 +1572,7 @@ class RMSDataHandle(object):
             # if the node was in mode 1 then move any uploaded phase1 solutions
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1')
             if os.path.isdir(remote_ph1dir) and node.mode==1:
-                if not os.path.isdir(self.phase1_dir):
-                    os.makedirs(self.phase1_dir, exist_ok=True)
+                os.makedirs(self.phase1_dir, exist_ok=True)
                 i = 0
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
                     full_name = os.path.join(remote_ph1dir, fil)
@@ -1761,21 +1760,17 @@ class RMSDataHandle(object):
             while bucket_num not in tested_buckets:
                 bucket_num = secrets.randbelow(len(bucket_list))
                 bucket = bucket_list[bucket_num]
-                # if the child isn't the right mode, skip it
-                if bucket.mode != required_mode and bucket.mode != -1:
+
+                # if the child isn't the right mode, or the stop-flag exists, skip it
+                stop_sts = os.path.isfile(os.path.join(bucket.dirpath, 'files', 'stop'))
+
+                if (bucket.mode != required_mode and bucket.mode != -1) or stop_sts:
                     tested_buckets.append(bucket_num)
                     continue
                 if bucket.nodename != 'localhost':
-                    tmp_save_dir = os.path.join(bucket.dirpath, 'files', savetype)
-                else:
-                    tmp_save_dir = save_dir
-                os.makedirs(tmp_save_dir, exist_ok=True)
-                if os.path.isfile(os.path.join(bucket.dirpath, 'files', 'stop')):
-                    tested_buckets.append(bucket_num)
-                    continue
-                if bucket.capacity < 0 or len(glob.glob(os.path.join(tmp_save_dir, '*.pickle'))) < bucket.capacity:
-                    if bucket.nodename != 'localhost':
-                        save_dir = tmp_save_dir
+                    save_dir = os.path.join(bucket.dirpath, 'files', savetype)
+                os.makedirs(save_dir, exist_ok=True)
+                if bucket.capacity < 0 or len(glob.glob(os.path.join(save_dir, '*.pickle'))) < bucket.capacity:
                     break
                 tested_buckets.append(bucket_num)
                 
