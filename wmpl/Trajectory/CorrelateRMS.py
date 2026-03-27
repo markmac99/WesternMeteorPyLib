@@ -1298,7 +1298,7 @@ class RMSDataHandle(object):
         log.info(f'saved {traj.traj_id} to {output_dir}')
 
         if self.mc_mode & MCMODE_PHASE1 and not self.mc_mode & MCMODE_PHASE2:
-            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=verbose)
+            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=True)
             
         elif self.mc_mode & MCMODE_PHASE2:
             # the MC phase may alter the trajectory details and if later on 
