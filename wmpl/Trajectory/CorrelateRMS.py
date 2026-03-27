@@ -1298,7 +1298,7 @@ class RMSDataHandle(object):
         log.info(f'saved {traj.traj_id} to {output_dir}')
 
         if self.mc_mode & MCMODE_PHASE1 and not self.mc_mode & MCMODE_PHASE2:
-            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=True)
+            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=verbose)
             
         elif self.mc_mode & MCMODE_PHASE2:
             # the MC phase may alter the trajectory details and if later on 
@@ -1720,7 +1720,7 @@ class RMSDataHandle(object):
                 if verbose:
                     log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
 
-                if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=verbose):
+                if self.saveCandOrTraj(matched_observations, picklename, 'candidate', verbose=True):
                     num_saved += 1
         log.info(f'skipped {len(candidate_trajectories)-num_saved} as marked already-processed')
 
@@ -1730,14 +1730,14 @@ class RMSDataHandle(object):
 
     def saveCandOrTraj(self, traj, file_name, savetype='phase1', verbose=False):
         """
-        in mcmode MCMODE_PHASE1 or MCMODE_SIMPLE , save the candidates or phase 1 trajectories.
+        Save the candidates (if in candidate-finding mode) or phase 1 trajectories.
         If remote data processing is enabled, this function distributes candidates amongst 
-        any nodes that are in candidate-processing mode (MCMODE_PHASE1). 
+        any nodes that are in the relevant mode. 
 
         Parameters:
         traj        : The trajectory or candidate to save
         file_name   : The filename to use
-        save_type   : The type of object we're saving. 
+        save_type   : The type of object we're saving, 'phase1' or 'candidate'. 
     
         """
         if savetype == 'phase1':
@@ -1767,10 +1767,13 @@ class RMSDataHandle(object):
                 if (bucket.mode != required_mode and bucket.mode != -1) or stop_sts:
                     tested_buckets.append(bucket_num)
                     continue
+
                 if bucket.nodename != 'localhost':
                     save_dir = os.path.join(bucket.dirpath, 'files', savetype)
                 os.makedirs(save_dir, exist_ok=True)
-                if bucket.capacity < 0 or len(glob.glob(os.path.join(save_dir, '*.pickle'))) < bucket.capacity:
+
+                current_workload = len(glob.glob(os.path.join(save_dir, '*.pickle')))
+                if bucket.capacity < 0 or current_workload < bucket.capacity:
                     break
                 tested_buckets.append(bucket_num)
                 
