@@ -515,8 +515,11 @@ class TrajectoryDatabase():
                         f"'{json.dumps(ign_obs_ids)}',1)")
 
         sql_str = sql_str.replace('nan','"NaN"')
-
-        self.dbhandle.execute(sql_str)
+        try:
+            self.dbhandle.execute(sql_str)
+        except Exception as e:
+            print(e)
+            print(sql_str)
         self.dbhandle.commit()
         return True
 
@@ -665,7 +668,7 @@ class TrajectoryDatabase():
     def copyTrajJsonRecords(self, trajectories, dt_range, failed=True, max_days=14):
         """
         Copy trajectories from the old Json database 
-        We only copy recent failed traj records since if we ever run for an historic date
+        We generally only copy recent records since if we ever run for an historic date
         its likely we will want to reanalyse all available data
 
         Parameters:
@@ -678,7 +681,7 @@ class TrajectoryDatabase():
         jd_end = datetime2JD(dt_range[1])
         jd_beg = max(datetime2JD(dt_range[0]), jd_end - max_days)
 
-        log.info('moving recent failed trajectories to sqlite - this may take some time....')
+        log.info(f'moving recent {"" if failed is False else "failed"} trajectories to sqlite - this may take some time....')
         log.info(f'trajectory date range {jd2Date(jd_beg, dt_obj=True).isoformat()} to {dt_range[1].isoformat()}')
 
         keylist = [k for k in trajectories.keys() if float(k) >= jd_beg and float(k) <= jd_end]
@@ -688,9 +691,9 @@ class TrajectoryDatabase():
             i += 1
             if not i % 10000:
                 self._commitTrajDatabase()
-                log.info(f'moved {i} failed_trajectories')
+                log.info(f'moved {i} {"" if failed is False else "failed"} trajectories')
         self._commitTrajDatabase()
-        log.info(f'done - moved {i} failed_trajectories')
+        log.info(f'done - moved {i} {"" if failed is False else "failed"} trajectories')
 
         return 
     
@@ -866,7 +869,8 @@ class dummyDatabaseJSON():
         self.failed_trajectories = {}
         if os.path.exists(self.db_file_path):
             self.__dict__ = json.load(open(self.db_file_path))
-            if hasattr(self, 'trajectories'):
+            
+            if hasattr(self, 'failed_trajectories'):
                 # Convert trajectories from JSON to TrajectoryReduced objects
                 traj_dict = getattr(self, "failed_trajectories")
                 trajectories_obj_dict = {}
@@ -874,6 +878,15 @@ class dummyDatabaseJSON():
                     traj_reduced_tmp = DummyTrajReduced(json_dict=traj_dict[traj_json])
                     trajectories_obj_dict[traj_reduced_tmp.jdt_ref] = traj_reduced_tmp
                 setattr(self, "failed_trajectories", trajectories_obj_dict)
+
+            if hasattr(self, 'trajectories'):
+                # Convert trajectories from JSON to TrajectoryReduced objects
+                traj_dict = getattr(self, "trajectories")
+                trajectories_obj_dict = {}
+                for traj_json in traj_dict:
+                    traj_reduced_tmp = DummyTrajReduced(json_dict=traj_dict[traj_json])
+                    trajectories_obj_dict[traj_reduced_tmp.jdt_ref] = traj_reduced_tmp
+                setattr(self, "trajectories", trajectories_obj_dict)
 
 
 ##################################################################################
@@ -951,6 +964,7 @@ if __name__ == '__main__':
             obsdb.closeObsDatabase()
             trajdb = TrajectoryDatabase(cml_args.dir_path)
             trajdb.copyTrajJsonRecords(jsondb.failed_trajectories, dt_range, failed=True)
+            trajdb.copyTrajJsonRecords(jsondb.trajectories, dt_range, failed=False)
             trajdb.closeTrajDatabase()
     else:
         if dbname == 'observations':
