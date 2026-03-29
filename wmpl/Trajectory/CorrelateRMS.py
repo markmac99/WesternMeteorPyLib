@@ -377,7 +377,7 @@ class PlateparDummy:
 
 class RMSDataHandle(object):
     def __init__(self, dir_path, dt_range=None, db_dir=None, output_dir=None, mcmode=MCMODE_ALL, max_trajs=1000, 
-            verbose=False, archivemonths=3, auto=False):
+            verbose=False, archivemonths=3, auto=False, max_toffset=10):
         """ Handles data interfacing between the trajectory correlator and RMS data files on disk. 
     
         Arguments:
@@ -397,6 +397,10 @@ class RMSDataHandle(object):
         self.mc_mode = mcmode
 
         self.auto_mode = auto
+
+        # max diff between observations - used when loading observations to make sure we don't miss any 
+        # towards the end of the time bucket
+        self.max_toffset = max_toffset
 
         self.dir_path = dir_path
         # create the data directory. Of course, if the folder doesnt exist there is nothing to process
@@ -731,8 +735,13 @@ class RMSDataHandle(object):
             if (dt_range is not None) and (night_dt is not None):
                 dt_beg, dt_end = dt_range
 
-                # Skip all folders which are outside the limits
-                if (night_dt < dt_beg) or (night_dt > dt_end):
+                # Skip all folders which are outside the limits.
+                # Note that its possible for a night's data to get split into two or more datasets 
+                # (typically if RMS crashes/restarts). To ensure we don't miss data after an RMS restart, 
+                # we include the 12 hours after dt_end. 
+                # Later, we'll filter down to just the requested date range
+
+                if (night_dt < dt_beg) or (night_dt > (dt_end + datetime.timedelta(hours=12))):
                     continue
 
 
@@ -790,6 +799,17 @@ class RMSDataHandle(object):
             added_count = 0
             for cams_met_obs in cams_met_obs_list:
 
+                obs_dt = jd2Date(cams_met_obs.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)
+
+                # filter out observations beyond the end of the current bucket, allowing for max_toffset
+                # extra seconds to capture events that might straddle the bucket boundary as seen from 
+                # two cameras
+
+                if obs_dt > dt_end + datetime.timedelta(self.max_toffset) or \
+                        obs_dt < dt_beg - datetime.timedelta(self.max_toffset):
+                    log.info(f'skipping {cams_met_obs.ff_name} as outside bucket')
+                    continue
+
                 # Get the platepar
                 if cams_met_obs.ff_name in platepars_recalibrated_dict:
                     pp_dict = platepars_recalibrated_dict[cams_met_obs.ff_name]
@@ -824,7 +844,7 @@ class RMSDataHandle(object):
                 # Init the new meteor observation object
                 met_obs = MeteorObsRMS(
                     station_code, 
-                    jd2Date(cams_met_obs.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc), 
+                    obs_dt, 
                     pp,
                     meteor_data, 
                     rel_proc_path, 
@@ -2098,7 +2118,8 @@ contain data folders. Data folders should have FTPdetectinfo files together with
         # Init the data handle
         dh = RMSDataHandle(
             cml_args.dir_path, dt_range=event_time_range, db_dir=cml_args.dbdir, output_dir=cml_args.outdir,
-            mcmode=mcmode, max_trajs=max_trajs, verbose=verbose, archivemonths=cml_args.archivemonths, auto=cml_args.auto)
+            mcmode=mcmode, max_trajs=max_trajs, verbose=verbose, archivemonths=cml_args.archivemonths, auto=cml_args.auto,
+            max_toffset=cml_args.maxtoffset)
         
         # If there is nothing to process and we're in Candidate mode, stop
         if not dh.processing_list and (mcmode & MCMODE_CANDS):
