@@ -12,16 +12,16 @@ import copy
 import datetime
 import shutil
 import time
+import signal
 import multiprocessing
 import logging
 import logging.handlers
 import glob
+import pandas as pd
 from dateutil.relativedelta import relativedelta
 import numpy as np
 import sys
-import signal
 import secrets
-import pandas as pd
 
 from wmpl.Formats.CAMS import loadFTPDetectInfo
 from wmpl.Trajectory.CorrelateEngine import TrajectoryCorrelator, TrajectoryConstraints, getMcModeStr
@@ -729,21 +729,8 @@ class RMSDataHandle(object):
         unpaired_met_obs_list = []
         prev_station = None
         station_count = 1
-        #prev_night_dt = None
 
         for station_code, rel_proc_path, proc_path, night_dt in processing_list:
-
-            #if prev_night_dt and (night_dt - prev_night_dt)
-
-            # Check that the night datetime is within the given range of times, if the range is given
-            if (dt_range is not None) and (night_dt is not None):
-                dt_beg, dt_end = dt_range
-
-                # Skip all folders which are outside the limits.
-                log.info(f'{night_dt} - {dt_beg} {dt_end}')
-                if (night_dt < dt_beg) or (night_dt > dt_end):
-                    continue
-
 
 
             ftpdetectinfo_name = None
@@ -777,11 +764,30 @@ class RMSDataHandle(object):
                     except:
                         pass
     
-
+            
             # Skip these observations if no data files were found inside
             if (ftpdetectinfo_name is None) or (platepar_recalibrated_name is None):
-                log.info("  Skipping {:s} due to missing data files...".format(rel_proc_path))
+                log.info(f"  Skipping {rel_proc_path} due to missing data files...")
                 continue
+
+            if len(platepars_recalibrated_dict) == 0:
+                log.info(f"  Skipping {rel_proc_path} due to no observations...")
+                continue
+
+            # Filter out any folders whose start-date is after the bucket end date, or whose
+            # latest observaton is before the bucket start date. This ensures we capture any overlaps
+
+            latest_obs = datetime.datetime.strptime(list(platepars_recalibrated_dict.keys())[-1][10:25], '%Y%m%d_%H%M%S')
+            latest_obs = latest_obs.replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=10)
+
+            # Check that the night datetime is within the given range of times, if the range is given
+            if (dt_range is not None) and (night_dt is not None):
+                dt_beg, dt_end = dt_range
+
+                # Skip all folders which are outside the limits.
+                if (latest_obs < dt_beg) or (night_dt > dt_end):
+                    log.info(f'{latest_obs} {dt_beg}, {night_dt} {dt_end}')
+                    continue
 
             if station_code != prev_station:
                 station_count += 1
@@ -800,6 +806,10 @@ class RMSDataHandle(object):
             for cams_met_obs in cams_met_obs_list:
 
                 obs_dt = jd2Date(cams_met_obs.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)
+
+                if dt_range and (obs_dt < dt_beg or obs_dt > dt_end):
+                    #log.info(f'skipping {cams_met_obs.ff_name} as outside current bucket')
+                    continue
 
                 # Get the platepar
                 if cams_met_obs.ff_name in platepars_recalibrated_dict:
@@ -2151,10 +2161,10 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
                 # Determine the limits of data
                 proc_dir_dt_beg = min(proc_dir_dts)
-                proc_dir_dt_end = max(proc_dir_dts)
+                proc_dir_dt_end = dt_end # max(proc_dir_dts)
 
                 # get true end-date by examining the folder
-                end_dir = [p[1] for p in dh.processing_list if p[3]==proc_dir_dt_end][0]
+                # end_dir = [p[1] for p in dh.processing_list if p[3]==proc_dir_dt_end][0]
 
                 #### TODO FINISH ME
                 
