@@ -1788,13 +1788,21 @@ class RMSDataHandle(object):
                     tested_buckets.append(bucket_num)
                     continue
 
+                #set a temporary save-dir name so we can check capacity
                 if bucket.nodename != 'localhost':
-                    save_dir = os.path.join(bucket.dirpath, 'files', savetype)
-                os.makedirs(save_dir, exist_ok=True)
+                    tmp_save_dir = os.path.join(bucket.dirpath, 'files', savetype)
+                else:
+                    tmp_save_dir = save_dir
 
-                current_workload = len(glob.glob(os.path.join(save_dir, '*.pickle')))
+                os.makedirs(tmp_save_dir, exist_ok=True)
+
+                current_workload = len(glob.glob(os.path.join(tmp_save_dir, '*.pickle')))
                 if bucket.capacity < 0 or current_workload < bucket.capacity:
+
+                    # set the save dir if the bucket is usable
+                    save_dir = tmp_save_dir
                     break
+
                 tested_buckets.append(bucket_num)
                 
         if verbose:
