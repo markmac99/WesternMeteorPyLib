@@ -235,9 +235,9 @@ class RemoteDataHandler():
                     'files/candidates/processed','files/phase1/processed']:
             try:
                 self.sftp_client.mkdir(pth)
+                self.sftp_client.chmod(pth, 0o777)
             except Exception:
                 pass
-            self.sftp_client.chmod(pth, 0o777)
 
         phase1_dir = os.path.join(source_dir, 'phase1')
         if os.path.isdir(phase1_dir):
@@ -285,9 +285,9 @@ class RemoteDataHandler():
                     rem_path = f'files/trajectories/{os.path.basename(dirpath)}'
                     try:
                         self.sftp_client.mkdir(rem_path)
+                        self.sftp_client.chmod(rem_path, 0o777)
                     except Exception:
                         pass
-                    self.sftp_client.chmod(rem_path, 0o777)
 
                     # upload all files in the folder. If any upload fails, set the traj sucess flag to false
                     for fil in filenames:
