@@ -771,7 +771,7 @@ class RMSDataHandle(object):
                 continue
 
             if len(platepars_recalibrated_dict) == 0:
-                log.info(f"  Skipping {rel_proc_path} due to no observations...")
+                #log.info(f"  Skipping {rel_proc_path} due to no observations...")
                 continue
 
             # Filter out any folders whose start-date is after the bucket end date, or whose
@@ -786,7 +786,6 @@ class RMSDataHandle(object):
 
                 # Skip all folders which are outside the limits.
                 if (latest_obs < dt_beg) or (night_dt > dt_end):
-                    log.info(f'{latest_obs} {dt_beg}, {night_dt} {dt_end}')
                     continue
 
             if station_code != prev_station:
