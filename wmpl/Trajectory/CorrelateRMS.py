@@ -1740,7 +1740,7 @@ class RMSDataHandle(object):
                 if verbose:
                     log.info(f'Candidate {picklename} contains {len(matched_observations)} observations')
 
-                if self.saveCandOrTraj(matched_observations, picklename, 'candidate', verbose=True):
+                if self.saveCandOrTraj(matched_observations, picklename, 'candidates', verbose=True):
                     num_saved += 1
         log.info(f'skipped {len(candidate_trajectories)-num_saved} as marked already-processed')
 
