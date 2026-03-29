@@ -729,19 +729,19 @@ class RMSDataHandle(object):
         unpaired_met_obs_list = []
         prev_station = None
         station_count = 1
+        #prev_night_dt = None
+
         for station_code, rel_proc_path, proc_path, night_dt in processing_list:
+
+            #if prev_night_dt and (night_dt - prev_night_dt)
 
             # Check that the night datetime is within the given range of times, if the range is given
             if (dt_range is not None) and (night_dt is not None):
                 dt_beg, dt_end = dt_range
 
                 # Skip all folders which are outside the limits.
-                # Note that its possible for a night's data to get split into two or more datasets 
-                # (typically if RMS crashes/restarts). To ensure we don't miss data after an RMS restart, 
-                # we include the 12 hours after dt_end. 
-                # Later, we'll filter down to just the requested date range
-
-                if (night_dt < dt_beg) or (night_dt > (dt_end + datetime.timedelta(hours=12))):
+                log.info(f'{night_dt} - {dt_beg} {dt_end}')
+                if (night_dt < dt_beg) or (night_dt > dt_end):
                     continue
 
 
@@ -800,15 +800,6 @@ class RMSDataHandle(object):
             for cams_met_obs in cams_met_obs_list:
 
                 obs_dt = jd2Date(cams_met_obs.jdt_ref, dt_obj=True, tzinfo=datetime.timezone.utc)
-
-                # filter out observations beyond the end of the current bucket, allowing for max_toffset
-                # extra seconds to capture events that might straddle the bucket boundary as seen from 
-                # two cameras
-
-                if obs_dt > dt_end + datetime.timedelta(self.max_toffset) or \
-                        obs_dt < dt_beg - datetime.timedelta(self.max_toffset):
-                    log.info(f'skipping {cams_met_obs.ff_name} as outside bucket')
-                    continue
 
                 # Get the platepar
                 if cams_met_obs.ff_name in platepars_recalibrated_dict:
@@ -2161,6 +2152,12 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                 # Determine the limits of data
                 proc_dir_dt_beg = min(proc_dir_dts)
                 proc_dir_dt_end = max(proc_dir_dts)
+
+                # get true end-date by examining the folder
+                end_dir = [p[1] for p in dh.processing_list if p[3]==proc_dir_dt_end][0]
+
+                #### TODO FINISH ME
+                
 
                 bin_length = 0.25 if mcmode == MCMODE_CANDS else 1.0
 
