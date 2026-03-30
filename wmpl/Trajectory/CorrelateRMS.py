@@ -723,6 +723,17 @@ class RMSDataHandle(object):
 
         for station_code, rel_proc_path, proc_path, night_dt in processing_list:
 
+            # Check that the night datetime is within the given range of times, if the range is given
+            if (dt_range is not None) and (night_dt is not None):
+                dt_beg, dt_end = dt_range
+
+                # Skip all folders which are outside the limits 
+                # allow a day before dt_beg to capture data overlapping from an earlier timezone
+                if (night_dt < dt_beg + datetime.timedelta(days=-1)) or (night_dt > dt_end):
+                    continue
+
+            log.info("")
+            log.info(f"Processing station: {station_code} {rel_proc_path}")
 
             ftpdetectinfo_name = None
             platepar_recalibrated_name = None
@@ -769,7 +780,7 @@ class RMSDataHandle(object):
                 #log.info(f"  Skipping {rel_proc_path} due to no observations...")
                 continue
 
-            # Check that the night datetime is within the given range of times, if the range is given
+            # More accurate check that the night datetime is within the given range of times, if the range is given
             if (dt_range is not None) and (night_dt is not None):
                 dt_beg, dt_end = dt_range
 
@@ -785,9 +796,6 @@ class RMSDataHandle(object):
                 if (latest_obs < dt_beg) or (night_dt > dt_end):
                     # log.info(f'skipping {rel_proc_path} as no relevant observations')
                     continue
-
-            log.info("")
-            log.info(f"Processing station: {station_code} {rel_proc_path}")
 
             if station_code != prev_station:
                 station_count += 1
