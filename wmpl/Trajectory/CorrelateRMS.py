@@ -666,8 +666,6 @@ class RMSDataHandle(object):
 
         processing_list = []
 
-        # skipped_dirs = 0
-
         # Go through all station directories
         for station_name in station_list:
 
@@ -693,13 +691,6 @@ class RMSDataHandle(object):
                 night_path_rel = os.path.join(station_name, night_name)
 
                 processing_list.append([station_name, night_path_rel, night_path, night_dt])
-
-                # else:
-                #     skipped_dirs += 1
-
-
-        # if skipped_dirs:
-        #     log.info("Skipped {:d} processed directories".format(skipped_dirs))
 
         return processing_list
 
@@ -740,11 +731,15 @@ class RMSDataHandle(object):
             if os.path.isfile(proc_path):
                 continue
 
-            log.info("")
-            log.info("Processing station: " + station_code)
+            # Find FTPdetectinfo and platepar files and skip if they're not both present
+            file_list = os.listdir(proc_path)
+            joined_file_list = ' '.join(file_list)
 
-            # Find FTPdetectinfo and platepar files
-            for name in os.listdir(proc_path):
+            if 'FTPdetectinfo' not in joined_file_list or 'platepars_all_recalibrated.json' not in joined_file_list:
+                continue
+
+            # okay, we at least have the required files, lets try loading them
+            for name in file_list:
                     
                 # Find FTPdetectinfo
                 if name.startswith("FTPdetectinfo") and name.endswith('.txt') and \
@@ -774,19 +769,25 @@ class RMSDataHandle(object):
                 #log.info(f"  Skipping {rel_proc_path} due to no observations...")
                 continue
 
-            # Filter out any folders whose start-date is after the bucket end date, or whose
-            # latest observaton is before the bucket start date. This ensures we capture any overlaps
-
-            latest_obs = datetime.datetime.strptime(list(platepars_recalibrated_dict.keys())[-1][10:25], '%Y%m%d_%H%M%S')
-            latest_obs = latest_obs.replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=10)
-
             # Check that the night datetime is within the given range of times, if the range is given
             if (dt_range is not None) and (night_dt is not None):
                 dt_beg, dt_end = dt_range
 
-                # Skip all folders which are outside the limits.
+                # Find the time of the latest detection in this dataset. 
+                # We add on 10s to the time of the latest detection to allow for the duration of an RMS FF block
+
+                latest_obs = datetime.datetime.strptime(list(platepars_recalibrated_dict.keys())[-1][10:25], '%Y%m%d_%H%M%S')
+                latest_obs = latest_obs.replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=10)
+
+                # Filter out any folders whose start-date is after the bucket end date, or whose
+                # latest observaton is before the bucket start date.
+
                 if (latest_obs < dt_beg) or (night_dt > dt_end):
+                    # log.info(f'skipping {rel_proc_path} as no relevant observations')
                     continue
+
+            log.info("")
+            log.info(f"Processing station: {station_code} {rel_proc_path}")
 
             if station_code != prev_station:
                 station_count += 1
@@ -1517,7 +1518,7 @@ class RMSDataHandle(object):
         save_path = self.candidate_dir
         procpath = os.path.join(save_path, 'processed')  
         os.makedirs(procpath, exist_ok=True)
-        # TODO use glob.glob here
+        
         for fil in os.listdir(save_path)[:self.max_trajs]:
             if '.pickle' not in fil: 
                 continue
@@ -2158,16 +2159,13 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                     if proc_dir_dts == []: 
                         proc_dir_dts=[dt_beg - datetime.timedelta(days=1), dt_end + datetime.timedelta(days=1)]
 
-                # Determine the limits of data
+                # Determine the limits of data - add one day to proc_dir_dt_end because each proc dir holds 
+                # up to one day's worth of detections
                 proc_dir_dt_beg = min(proc_dir_dts)
-                proc_dir_dt_end = dt_end # max(proc_dir_dts)
+                proc_dir_dt_end = max(proc_dir_dts) + datetime.timedelta(days=1)
 
-                # get true end-date by examining the folder
-                # end_dir = [p[1] for p in dh.processing_list if p[3]==proc_dir_dt_end][0]
-
-                #### TODO FINISH ME
-                
-
+                # in candidate-only mode, we want to write data out frequently so that the solvers can get to work.
+                # Hence set the bin-size to 6 hours. 
                 bin_length = 0.25 if mcmode == MCMODE_CANDS else 1.0
 
                 # Split the processing into daily chunks
