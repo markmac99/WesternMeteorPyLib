@@ -706,7 +706,8 @@ class TrajectoryCorrelator(object):
 
 
                 # Skip this part if there are less than 3 stations
-                if len(traj.observations) < 3:
+                active_obs = [obstmp for obstmp in traj.observations if not obstmp.ignore_station]
+                if len(active_obs) < 3:
                     break
 
 
