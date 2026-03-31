@@ -278,7 +278,6 @@ class ObservationsDatabase():
             status = True
         else:
             try:
-                log.info('insert: write to obsdb')
                 self.dbhandle.execute('insert or replace into paired_obs select * from sourcedb.paired_obs')
                 status = True
             except Exception as e:
@@ -710,7 +709,6 @@ class TrajectoryDatabase():
             log.warning(f'source database missing: {source_db_path}')
             return 
         # attach the other db, copy the records then detach it
-        log.info('insert: write to trajdb')
         cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
 
         # TODO need to correct the traj_file_path to account for server locations

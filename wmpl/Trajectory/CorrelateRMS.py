@@ -1019,6 +1019,7 @@ class RMSDataHandle(object):
             
         jdt_range = [datetime2JD(dt_beg), datetime2JD(dt_end)]
 
+        log.info("  Removing deleted trajectories...")
         traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
         i = 0
         for traj in traj_list:
@@ -1040,6 +1041,7 @@ class RMSDataHandle(object):
                 return False
             return any(i in next_obs_ids for i in obs_ids)
 
+        log.info("  Looking for duplicate trajectories...")
         # create a dataframe and sort it by date. Duplicates will almost always have very similar dates
         traj_df = pd.DataFrame(traj_list)
         if len(traj_df) > 0:
