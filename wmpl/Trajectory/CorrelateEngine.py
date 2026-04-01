@@ -1054,13 +1054,22 @@ class TrajectoryCorrelator(object):
 
             if orig_traj:
                 log.info(f"Removing the previous solution {os.path.dirname(orig_traj.traj_file_path)} ...")
-                remove_phase1 = True if abs(round((traj.jdt_ref-orig_traj.jdt_ref)*86400000,0)) > 0 else False
-                self.dh.removeTrajectory(orig_traj, remove_phase1=remove_phase1)
+                manage_phase1 = True if abs(round((traj.jdt_ref-orig_traj.jdt_ref)*86400000,0)) > 0 else False
+                orig_traj.pre_mc_longname = os.path.split(self.dh.generateTrajOutputDirectoryPath(orig_traj, make_dirs=False))[-1] 
+                self.dh.removeTrajectory(orig_traj, remove_phase1=manage_phase1)
+
                 traj.pre_mc_longname = os.path.split(self.dh.generateTrajOutputDirectoryPath(orig_traj, make_dirs=False))[-1] 
+
+                # if we are in MCMODE Phase2, we do not want to save a new copy of the Phase1 file
+                # even if the trajectory has a slightly different ref_dt
+                if mcmode == MCMODE_PHASE2:
+                    manage_phase1 = False
+            else:
+                manage_phase1 = False
 
             log.info('Saving trajectory....')
 
-            self.dh.saveTrajectoryResults(traj, self.traj_constraints.save_plots)
+            self.dh.saveTrajectoryResults(traj, self.traj_constraints.save_plots, save_phase1=manage_phase1)
 
             # we do not need to update the database for phase2 
             if mcmode != MCMODE_PHASE2:

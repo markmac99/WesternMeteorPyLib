@@ -1302,7 +1302,7 @@ class RMSDataHandle(object):
 
         return out_path
 
-    def saveTrajectoryResults(self, traj, save_plots, verbose=False):
+    def saveTrajectoryResults(self, traj, save_plots, save_phase1=False, verbose=False):
         """ Save trajectory results to the disk. """
 
 
@@ -1328,13 +1328,13 @@ class RMSDataHandle(object):
         savePickle(traj, output_dir, traj.file_name + '_trajectory.pickle')
         log.info(f'saved {traj.traj_id} to {output_dir}')
 
-        if self.mc_mode & MCMODE_PHASE1 and not self.mc_mode & MCMODE_PHASE2:
-            self.saveCandOrTraj(traj, traj.pre_mc_longname + '_trajectory.pickle', verbose=verbose)
+        if (self.mc_mode & MCMODE_PHASE1 and not self.mc_mode & MCMODE_PHASE2) or save_phase1:
+            self.saveCandOrTraj(traj, f'{traj.longname}_trajectory.pickle', verbose=verbose)
             
         elif self.mc_mode & MCMODE_PHASE2:
             # the MC phase may alter the trajectory details and if later on 
             # we're including additional observations we need to use the most recent version of the trajectory
-            savePickle(traj, os.path.join(self.phase1_dir, 'processed'), traj.pre_mc_longname + '_trajectory.pickle')
+            savePickle(traj, os.path.join(self.phase1_dir, 'processed'), f'{traj.pre_mc_longname}_trajectory.pickle')
 
         # Save the plots
         if save_plots:
@@ -1384,12 +1384,13 @@ class RMSDataHandle(object):
                     shutil.rmtree(traj_dir, ignore_errors=True)
             return
 
-        if self.mc_mode & MCMODE_PHASE1 and remove_phase1:
+        if (self.mc_mode & MCMODE_PHASE1 or self.mc_mode & MCMODE_CANDS) and remove_phase1:
             # remove any solution from the phase1 folder
-            phase1_traj = os.path.join(self.phase1_dir, os.path.basename(traj_reduced.traj_file_path))
+            phase1_traj = os.path.join(self.phase1_dir, traj_reduced.pre_mc_longname + '_trajectory.pickle')
             if os.path.isfile(phase1_traj):
                 try:
                     os.remove(phase1_traj)
+                    log.info(f'removed {phase1_traj}')
                 except Exception: 
                     pass
 
@@ -2255,7 +2256,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
 
                     # If we're in either of these modes, the correlator will have scooped up available data
                     # from candidates or phase1 folders so no need to keep looping. 
-                    if mcmode == MCMODE_PHASE1 or mcmode == MCMODE_PHASE2:
+                    if mcmode == MCMODE_PHASE1 or mcmode == MCMODE_PHASE2 or mcmode == MCMODE_BOTH:
                         break
 
                 if mcmode & MCMODE_CANDS:
