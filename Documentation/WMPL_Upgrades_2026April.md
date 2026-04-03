@@ -11,14 +11,15 @@ by Mark McIntyre, April 2026
 
 ### Operation Modes
 
-The updated solver now has three core operational modes, numbered 4, 1, and 2. The previous mode 1 has been split into two stages numbered 4 and 1 as explained below. In the code these are MCMODE_CANDS, MCMODE_PHASE1 and MCMODE_PHASE2.
+The updated solver now has three core operational modes, numbered 4, 1, and 2. In the code these are MCMODE_CANDS, MCMODE_PHASE1 and MCMODE_PHASE2. The previous mode 1 has been split into two stages numbered 4 and 1 as explained below. 
 
 Here's what each phase does.
 
 - In mcmode 4, the solver finds and saves candidate groups of observations.  
-   During this phase, observations are only loaded if they're not marked as paired in the observations database Furthermore any potential candidate groups are checked against the candidate database to avoid reanalysing combinations that were already found. Remaining new candidates are then added to the candidate database and saved to disk.
+   During this phase, unpaired observations are loaded and candidate groups found. Observations are excluded if they're already marked as paired in the observations database, and potential candidate groups are also checked against the candidate database to avoid reanalysing combinations that were already found. Remaining new candidates are then added to the candidate database and saved to disk.
 
-- In mcmode 1, the solver loads candidates created by the previous step and attempts to find a simple solution. If successful, the trajectory is saved to disk and a copy placed in the 'phase1' folder for further analysis, while the trajectory and observations databases are updated accordingly. If unsuccessful, the trajectory is added to the list of failed trajectories.
+- In mcmode 1, the solver loads candidates created by the previous step and attempts to find a simple solution. 
+If successful, the trajectory is saved to disk and a copy placed in the 'phase1' folder for further analysis, while the trajectory and observations databases are updated accordingly. If unsuccessful, the trajectory is added to the list of failed trajectories in the trajectories database.
 
 - In mcmode 2, the solver loads phase1 solutions and performs Monte-Carlo analysis. This mode is unchanged from previously.
 
@@ -37,9 +38,9 @@ The solver supports distribution of both candidates and phase1 solutions to chil
 
 To enable distributed processing, we require one master node and one or more child nodes.
 
-On the master, we create a configuration file '**wmpl_remote.cfg**' in the same folder as the databases and then run three instances of the Solver on a master node, one in each of mcmodes 4, 1 and 2 (more than one instance in mcmode 2 can be run). The content of the configuration file is explained below.
+On the master, we create a configuration file '**wmpl_remote.cfg**' in the same folder as the databases and then run three instances of the Solver on a master node, one in each of mcmodes 4, 1 and 2 (more than one instance in mcmode 2 can be run). The content of the configuration file is explained below and a sample file is included in the repository.
 
-On each child, we also create a configuration file (see 'Child Node Configuration' below). Child nodes can run in mcmodes 1 or 2, collecting relevant data from the master node.
+On each child, we also create a configuration file (see 'Child Node Configuration' below). Child nodes can run in mcmodes 1 or 2, collecting relevant data from the master node and uploading the results back.
 
 SFTP is used to move data between master and child, and each child must therefore have an SFTP account on the server hosting the master.
 
@@ -108,7 +109,7 @@ user = node1
 key = ~/.ssh/somekey  
 port = 22
 
-At startup, the child node will connect to the master and remove the "stop" file, if present. This indicates to the master that it is "open for business". The child will then loop around, downloading any assigned data and processing it. Downloaded files are moved to a subfolder 'processed' on the sftp server. Upon completion it will upload the results to the sftp server.
+At startup, the child node will connect to the master and remove the "stop" file, if present. This indicates to the master that it is "open for business". The child will then loop around, downloading any assigned data and processing it. Downloaded files are moved to a subfolder _processed_ on the sftp server. Upon completion it will upload the results to the sftp server.
 
 **Stopping a Child Node**
 
@@ -116,19 +117,19 @@ Any node can be terminated by pressing Ctrl-C or by sending SIGINT to its proces
 
 Note that termination will leave data incompletely processed and no upload will take place, and so it is advisable to wait until the child's logfile indicates it is idle.
 
-Alternatively, one can identify the most recent, potentially incomplete, data set that was assigned to the node by looking in the child's processed folders and copying the data back to the server's candidate or phase1 folders as appropriate.
+Alternatively, one can identify the most recent, potentially incomplete, data set that was assigned to the node by looking in the child's _processed_ folders and copying the data back to the master node's _candidate_ or _phase1_ folders as appropriate.
 
 **Recovering from a Child Node Crash or Shutdown**
 
-If a child node crashes or is otherwise terminated during processing, the data can be recovered and redistributed to the master or other nodes, or indeed to the failed node after it has restarted. This can be done by looking in the 'processed' folders on the child, or if the child node is unavailable, in the child node's 'processed' folder on the master node, identifying the most recent data, and moving it as necessary.
+If a child node crashes or is otherwise terminated during processing, the data can be recovered and redistributed to the master or other nodes, or indeed to the failed node after it has restarted. This can be done by looking in the _processed_ folders on the child, or if the child node is unavailable, in the child node's _processed_ folder on the master node, identifying the most recent data, and moving it as necessary.
 
 ## Duplicate Transaction Checks
 
-A check has been introduced in both candidate finding and phase1 solving, that examines the database for potential duplicate or mergeable trajectories.
+A check has been introduced in both candidate finding and phase1 solving that examines the database for potential duplicate or mergeable trajectories.
 
 Duplicates are defined as trajectories that contain the same observations. When detected, the solution with the least ignored observations is retained and the duplicates are deleted.
 
-Mergeable trajectories are defined as those with at least one common observation. In principle these should never arise but in practice with a distributed processing model, it is possible. For example, a candidate might be found and handed off for solving. While it is still being solved, a new observation might be uploaded by a camera, and so on its next pass the candidate finder creates a second candidate. When detected the mergeable trajectories are invalidated and all observations are marked unpaired, so that on its next pass the candidate finder should identify a single combined candidate.
+Mergeable trajectories are defined as those with at least one common observation. In principle these should never arise but in practice with a distributed processing model, it is possible. For example, a candidate might be found and handed off for solving but while it is still being solved, a new observation might be uploaded by a camera, and so on its next pass the candidate finder creates a second candidate with an additional observation and a different reference timestamp. When detected the mergeable trajectories are deleted and all observations are marked unpaired, so that on its next pass the candidate finder should identify a single combined candidate.
 
 ## Databases
 
@@ -158,7 +159,7 @@ If the solver is rerun for an historic period from before the cutover, there wil
 
 That said, should we wish to copy historical data into the SQLite databases, this can be done with the command-line interface to CorrelateDB as shown below:
 
-python -m wmpl.Trajectory.CorrelateDB --dir_path rms_data --action copy --timerange "(20251215-000000,20251222-000000)"
+_python -m wmpl.Trajectory.CorrelateDB --dir_path rms_data --action copy --timerange "(20251215-000000,20251222-000000)"_
 
 This will copy observations and failed trajectories into SQLite from the JSON database in _rms_data_ for a date range 2025-12-15 to 2025-12-22, creating the SQLite databases if necessary.
 
