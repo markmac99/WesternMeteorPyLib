@@ -1259,7 +1259,8 @@ class RMSDataHandle(object):
         return found_traj_obs_pairs
 
     def generateTrajOutputDirectoryPath(self, traj, make_dirs=False):
-        """ Generate a path to the trajectory output directory. 
+        """ 
+        Generate a path to the trajectory output directory. 
         
         Keyword arguments:
             make_dirs: [bool] Make the tree of output directories. False by default.
@@ -1303,7 +1304,14 @@ class RMSDataHandle(object):
         return out_path
 
     def saveTrajectoryResults(self, traj, save_plots, save_phase1=False, verbose=False):
-        """ Save trajectory results to the disk. """
+        """ 
+        Save trajectory results to the disk. 
+
+        Parameters:
+        traj:       [traj]    the trajectory to save 
+        save_plots: [bool]    true if we also want to generate plots of the data
+        save_phase1:[bool]    true if we also want to save a phase1 copy of the traj
+        """
 
 
         # Generate the name for the output directory (add list of country codes at the end)
@@ -1346,7 +1354,8 @@ class RMSDataHandle(object):
             traj.save_results = False
 
     def addTrajectory(self, traj, failed_jdt_ref=None, verbose=False):
-        """ Add the resulting trajectory to the database. 
+        """ 
+        Add the resulting trajectory to the database. 
 
         Arguments:
             traj: [Trajectory object]
@@ -1369,7 +1378,9 @@ class RMSDataHandle(object):
         self.trajectory_db.addTrajectory(traj_reduced, failed=(failed_jdt_ref is not None), verbose=verbose)
 
     def removeTrajectory(self, traj_reduced, remove_phase1=False):
-        """ Remove the trajectory from the data base and disk. """
+        """ 
+        Remove the trajectory from the data base and disk. 
+        """
 
         # in mcmode 2 the database isn't loaded but we still need to delete updated trajectories
         if self.mc_mode & MCMODE_PHASE2: 
@@ -1404,16 +1415,18 @@ class RMSDataHandle(object):
         self.trajectory_db.removeTrajectory(traj_reduced)
 
     def checkCandIfFailed(self, candidate):
-        """ Check if the given candidate has been processed with the same observations and has failed to be
-            computed before.
+        """ 
+        Check if the given candidate has been processed with the same observations and has failed to be
+        computed before.
         """
         jdt_ref = min([obs.jdt_ref for obs, _, _ in candidate])
         stations = [obs.station_id for obs, _, _ in candidate]
         return self.trajectory_db.checkCandIfFailed(jdt_ref, stations)
 
     def checkTrajIfFailed(self, traj):
-        """ Check if the given trajectory has been computed with the same observations and has failed to be
-            computed before.
+        """ 
+        Check if the given trajectory has been computed with the same observations and has failed to be
+        computed before.
 
         Parameters:
         traj:       full trajectory object
@@ -1426,7 +1439,7 @@ class RMSDataHandle(object):
         return self.trajectory_db.checkTrajIfFailed(traj_reduced)
 
     def loadFullTraj(self, traj_reduced):
-        """ Load the full trajectory object. 
+        """ Load the full trajectory object corresponding to a traj_reduced object. 
     
         Arguments:
             traj_reduced: [TrajectoryReduced object]
@@ -1554,7 +1567,8 @@ class RMSDataHandle(object):
     def moveUploadedData(self, verbose=False):
         """
         Used in 'master' mode: this moves uploaded data to the target locations on the server
-        and merges in the databases
+        and merges in any uploaded sqlite databases
+
         """
         log.info('merging in any remotely processed data')
         for node in self.RemoteDatahandler.nodes:
@@ -1706,7 +1720,8 @@ class RMSDataHandle(object):
 
     def getRemoteData(self, verbose=False):
         """
-        Used in 'child' mode: this downloads data from the master for local processing. 
+        Used in 'child' mode: Wrapper around the remote data handling function to 
+        download data from the master for local processing. 
         """
         if not self.RemoteDatahandler:
             log.info('remote data handler not initialised')
@@ -1722,6 +1737,15 @@ class RMSDataHandle(object):
         return status
 
     def getCandidateId(self, matched_observations, verbose=False):
+        """
+        given a set of observations, create a candidate ID
+
+        Parameters:
+        matched_observations: list of observations
+
+        Returns: [string] candidate id  
+        """
+
         ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
         ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
         ctry_list.sort()

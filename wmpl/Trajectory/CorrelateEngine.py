@@ -447,7 +447,9 @@ class TrajectoryCorrelator(object):
 
 
     def initObservationsObject(self, met, pp, ref_dt=None):
-        """ Init the observations object which will be fed into the trajectory solver. """
+        """ 
+        Init the observations object which will be fed into the trajectory solver. 
+        """
 
         # If the reference datetime is given, apply a time offset
         if ref_dt is not None:
@@ -504,7 +506,9 @@ class TrajectoryCorrelator(object):
 
 
     def projectPointToTrajectory(self, indx, obs, plane_intersection):
-        """ Compute lat, lon and height of given point on the meteor trajectory. """
+        """ 
+        Compute lat, lon and height of given point on the meteor trajectory. 
+        """
 
         meas_vector = obs.meas_eci[indx]
         jd = obs.JD_data[indx]
@@ -521,7 +525,9 @@ class TrajectoryCorrelator(object):
 
 
     def quickTrajectorySolution(self, obs1, obs2):
-        """ Perform an intersecting planes solution and check if it satisfies specified sanity checks. """
+        """ 
+        Perform an intersecting planes solution and check if it satisfies specified sanity checks. 
+        """
 
         # Do the plane intersection solution
         plane_intersection = PlaneIntersection(obs1, obs2)
