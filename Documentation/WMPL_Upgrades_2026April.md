@@ -32,6 +32,8 @@ Some Bitwise combinations of modes are permitted as shown in the table below:
 | 7 <br>MCMODE_ALL    | Equivalent to 0 or passing no mcmode                         | Typically used during manual data analysis. |
 | Any other value     | Treated as a value of 7                                      |                                             |
 
+Note that in modes 0, 3, 5 and 7, intermediate files (ie candidates and phase1 files) are not saved to disk. 
+
 ### Distributed Processing
 
 The solver supports distribution of both candidates and phase1 solutions to child nodes.
