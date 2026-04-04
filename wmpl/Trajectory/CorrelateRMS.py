@@ -472,7 +472,8 @@ class RMSDataHandle(object):
 
             # no need to load the legacy JSON file if we already have the sqlite databases
             if not os.path.isfile(os.path.join(db_dir, 'observations.db')) and \
-               not os.path.isfile(os.path.join(db_dir, 'trajectories.db')):
+               not os.path.isfile(os.path.join(db_dir, 'trajectories.db')) and \
+               os.path.isfile(database_path):
                 log.info("Loading old JSON database: {:s}".format(database_path))
                 self.old_db = DatabaseJSON(database_path, verbose=self.verbose)
             else:
@@ -897,21 +898,21 @@ class RMSDataHandle(object):
             date_fmt = "%Y"
 
             # Check if the directory name starts with a year
-            if not re.match("^\d{4}", dir_name):   # noqa: W605 
+            if not re.match(r"^\d{4}", dir_name):   
                 return False
 
         elif len(dir_name) == 6:
             date_fmt = "%Y%m"
 
             # Check if the directory name starts with a year and month
-            if not re.match("^\d{6}", dir_name): # noqa: W605 
+            if not re.match(r"^\d{6}", dir_name): 
                 return False
 
         elif len(dir_name) == 8:
             date_fmt = "%Y%m%d"
 
             # Check if the directory name starts with a year, month and day
-            if not re.match("^\d{8}", dir_name): # noqa: W605 
+            if not re.match(r"^\d{8}", dir_name): 
                 return False
 
         else:
@@ -1877,7 +1878,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
     arg_parser.add_argument('dir_path', type=str, help='Path to the root data directory. Trajectory helper files will be stored here as well.')
 
     arg_parser.add_argument('-t', '--maxtoffset', metavar='MAX_TOFFSET', 
-        help='Maximum time offset between the stations. Default is 5 seconds.', type=float, default=10.0)
+        help='Maximum time offset between the stations. Default is 10 seconds.', type=float, default=10.0)
 
     arg_parser.add_argument('-s', '--maxstationdist', metavar='MAX_STATION_DIST', 
         help='Maximum distance (km) between stations of paired meteors. Default is 600 km.', type=float, 
