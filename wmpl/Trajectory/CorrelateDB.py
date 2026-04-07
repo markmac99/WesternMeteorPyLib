@@ -63,7 +63,7 @@ class ObservationsDatabase():
         self.dbhandle = con
         con.execute('pragma journal_mode=wal')
         if purge_records:
-            con.execute('drop table paired_obs')
+            con.execute('drop table if exists paired_obs')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
             con.execute("CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)")
@@ -261,7 +261,7 @@ class ObservationsDatabase():
 
     def mergeObsDatabase(self, source_db_path):
         """
-        Merge in records from another observation database 'source_db_path', for example from a remote node
+        Merge in records from another database 'source_db_path', for example from a remote node
 
         Parameters:
         source_db_path  : full name and path to the source database to merge from 
@@ -698,7 +698,7 @@ class TrajectoryDatabase():
     
     def mergeTrajDatabase(self, source_db_path):
         """
-        merge in records from another observation database, for example from a remote node
+        merge in records from another database, for example from a remote node
 
         Parameters:
         source_db_path  : the full name of the source database from which to merge in records
@@ -710,8 +710,6 @@ class TrajectoryDatabase():
             return 
         # attach the other db, copy the records then detach it
         cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
-
-        # TODO need to correct the traj_file_path to account for server locations
 
         status = True
         for table_name in ['trajectories', 'failed_trajectories']:
@@ -835,6 +833,33 @@ class CandidateDatabase():
         self.dbhandle.execute(f"delete from candidates where ref_dt < {keep_dt.timestamp()}")
         self.dbhandle.commit()
         return 
+    
+    def mergeCandDatabase(self, source_db_path):
+        """
+        merge in records from another observation database, for example from a remote node
+
+        Parameters:
+        source_db_path  : the full name of the source database from which to merge in records
+
+        """
+
+        if not os.path.isfile(source_db_path):
+            log.warning(f'source database missing: {source_db_path}')
+            return 
+        # attach the other db, copy the records then detach it
+        cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+
+        status = True
+        for table_name in ['candidates']:
+            try:
+                # bulk-copy if possible
+                cur.execute(f'insert or replace into {table_name} select * from sourcedb.{table_name}')
+            except Exception:
+                log.warning(f'unable to merge data from {source_db_path}')
+                status = False
+        self.dbhandle.commit()
+        cur.execute("detach database 'sourcedb'")
+        return status
     
 
 ##################################################################################
