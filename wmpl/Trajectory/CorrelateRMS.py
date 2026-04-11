@@ -633,7 +633,8 @@ class RMSDataHandle(object):
         return 
     
     def closeObservationsDatabase(self):
-        self.observations_db.closeObsDatabase()
+        if self.observations_db:
+            self.observations_db.closeObsDatabase()
         return 
 
     def closeCandidatesDatabase(self):
@@ -641,7 +642,8 @@ class RMSDataHandle(object):
             self.candidate_db.closeCandDatabase()
     
     def closeTrajectoryDatabase(self):
-        self.trajectory_db.closeTrajDatabase()
+        if self.trajectory_db:
+            self.trajectory_db.closeTrajDatabase()
         return 
 
     def loadStations(self):
@@ -1039,6 +1041,8 @@ class RMSDataHandle(object):
         # lambda to use to find traj with common obs
         def atleastOneObs(obs_ids,next_obs_ids):
             if obs_ids is None or next_obs_ids is None:
+                return False
+            if type(obs_ids[0])==int or type(next_obs_ids[0])==int:
                 return False
             return any(i in next_obs_ids for i in obs_ids)
 
@@ -2287,6 +2291,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                 if mcmode & MCMODE_CANDS:
                     dh.closeObservationsDatabase()
                     dh.closeCandidatesDatabase()
+                    dh.closeTrajectoryDatabase()
 
             else:
                 # there were no datasets to process
