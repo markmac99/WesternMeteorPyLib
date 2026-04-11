@@ -464,8 +464,8 @@ class TrajectoryDatabase():
         tblname = 'failed_trajectories' if failed else 'trajectories'
 
         # if force_add is false, don't replace any existing entry
-        if not force_add:
-            res = self.dbhandle.execute(f'select traj_id from {tblname} where status =1')
+        if not force_add and hasattr(traj_reduced, 'traj_id') and traj_reduced.traj_id is not None:
+            res = self.dbhandle.execute(f'select traj_id from {tblname} where status = 1 and traj_id = "{traj_reduced.traj_id}"')
             row = res.fetchone()
             if row is not None and row[0] !='None':
                 return True
