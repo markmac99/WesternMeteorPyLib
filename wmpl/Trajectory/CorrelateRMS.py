@@ -1049,6 +1049,9 @@ class RMSDataHandle(object):
         log.info("  Looking for duplicate trajectories...")
         # create a dataframe and sort it by date. Duplicates will almost always have very similar dates
         traj_df = pd.DataFrame(traj_list)
+        # remove legacy trajs without obs_ids 
+        if 'obs_ids' in traj_df.columns:
+            traj_df = traj_df[traj_df.obs_ids != "None"]
         if len(traj_df) > 0:
 
             # sort by date
