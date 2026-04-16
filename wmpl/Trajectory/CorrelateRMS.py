@@ -1967,6 +1967,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
     db_dir = cml_args.dbdir
     if db_dir is None:
         db_dir = cml_args.dir_path 
+    os.makedirs(db_dir, exist_ok=True)
 
     # mcmode values
     # mcmode = 1 -> load candidates and do simple solutions
@@ -2016,8 +2017,7 @@ contain data folders. Data folders should have FTPdetectinfo files together with
         log_dir = cml_args.dir_path
 
     # Create a log dir if it doesn't exist
-    if not os.path.isdir(log_dir):
-        os.makedirs(log_dir)
+    os.makedirs(log_dir, exist_ok=True)
 
     # Init the logger
     #log = logging.getLogger("traj_correlator")

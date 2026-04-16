@@ -938,8 +938,7 @@ if __name__ == '__main__':
     log_dir = cml_args.logdir
     if log_dir is None:
         log_dir = os.path.join(cml_args.dir_path, 'logs')
-    if not os.path.isdir(log_dir):
-        os.makedirs(log_dir)
+    os.makedirs(log_dir, exist_ok=True)
     log.setLevel(logging.DEBUG)
 
     # Init the log formatter
