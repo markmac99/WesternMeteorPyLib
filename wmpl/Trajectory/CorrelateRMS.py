@@ -1754,7 +1754,7 @@ class RMSDataHandle(object):
         Returns: [string] candidate id  
         """
 
-        ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
+        ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True, tzinfo=datetime.timezone.utc)
         ctry_list = list(set([met_obs.station_code[:2] for _, met_obs, _ in matched_observations]))
         ctry_list.sort()
         ctries = '_'.join(ctry_list)
@@ -1775,7 +1775,7 @@ class RMSDataHandle(object):
         num_saved = 0
         for matched_observations in candidate_trajectories:
             cand_id = self.getCandidateId(matched_observations)
-            ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True)
+            ref_dt = jd2Date(min([obs.jdt_ref for obs, _, _ in matched_observations]), dt_obj=True, tzinfo=datetime.timezone.utc)
             obs_ids = [met_obs.id for _, met_obs, _ in matched_observations]
 
             if self.candidate_db.checkAndAddCand(cand_id, ref_dt.timestamp(), obs_ids):
