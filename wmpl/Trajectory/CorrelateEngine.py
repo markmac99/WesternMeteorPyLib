@@ -878,6 +878,8 @@ class TrajectoryCorrelator(object):
                 # Add the trajectory to the list of failed trajectories
                 ref_dt = jd2Date(min([met_obs.jdt_ref for met_obs in traj.observations]), dt_obj=True)
                 log.info(f"Trajectory at {ref_dt.isoformat()} skipped and added to fails!")
+                traj.obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is False]
+                traj.ign_obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is True]
                 self.dh.addTrajectory(traj, failed_jdt_ref=jdt_ref, verbose=verbose)
                 return False
 
@@ -892,6 +894,8 @@ class TrajectoryCorrelator(object):
                         for obstmp in traj_status.observations]):
 
                     ref_dt = jd2Date(min([met_obs.jdt_ref for met_obs in traj.observations]), dt_obj=True)
+                    traj_status.obs_ids = [obs.obs_id for obs in traj_status.observations if obs.ignore_station is False]
+                    traj_status.ign_obs_ids = [obs.obs_id for obs in traj_status.observations if obs.ignore_station is True]
                     log.info("2 station only solution, one station has an error above the maximum limit, skipping!")
 
                     log.info(f"Trajectory at {ref_dt.isoformat()} skipped and added to fails!")
@@ -992,6 +996,8 @@ class TrajectoryCorrelator(object):
 
                     # Add the trajectory to the list of failed trajectories
                     if mcmode != MCMODE_PHASE2:
+                        traj.obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is False]
+                        traj.ign_obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is True]
                         self.dh.addTrajectory(traj, failed_jdt_ref=jdt_ref, verbose=verbose)
                     ref_dt = jd2Date(min([met_obs.jdt_ref for met_obs in traj.observations]), dt_obj=True)
                     log.info(f"Trajectory at {ref_dt.isoformat()} skipped and added to fails!")
@@ -1080,6 +1086,8 @@ class TrajectoryCorrelator(object):
             # we do not need to update the database for phase2 
             if mcmode != MCMODE_PHASE2:
                 log.info('Updating database....')
+                traj.obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is False]
+                traj.ign_obs_ids = [obs.obs_id for obs in traj.observations if obs.ignore_station is True]
                 self.dh.addTrajectory(traj, verbose=verbose)
                 if matched_obs is not None: 
                     self.dh.addPairedObs(matched_obs, traj.jdt_ref, verbose=verbose)
