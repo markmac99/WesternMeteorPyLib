@@ -1015,14 +1015,15 @@ class RMSDataHandle(object):
         else:
             dt_beg, dt_end = dt_range
 
+        traj_dir_path = os.path.join(self.output_dir, OUTPUT_TRAJ_DIR)
+
         log.info("Updating trajectory database...")
         if self.dt_range is not None:
             log.info(f"  Datetime range: {dt_beg.strftime('%Y-%m-%d %H:%M:%S')} - {dt_end.strftime('%Y-%m-%d %H:%M:%S')}")
-        log.info("  Removing deleted trajectories from: " + self.output_dir)
+        log.info(f"  Removing deleted trajectories no longer in: {traj_dir_path}")
             
         jdt_range = [datetime2JD(dt_beg), datetime2JD(dt_end)]
 
-        log.info("  Removing deleted trajectories...")
         traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
         i = 0
         for traj in traj_list:
@@ -1061,45 +1062,71 @@ class RMSDataHandle(object):
 
             # add a column containing the next trajectory's observations
             traj_df['obs_ids_next'] = traj_df.obs_ids.shift(-1)
+            traj_df['ign_obs_ids_next'] = traj_df.ign_obs_ids.shift(-1)
+            traj_df['traj_id_next'] = traj_df.traj_id.shift(-1)
+            traj_df['traj_path_next'] = traj_df.traj_file_path.shift(-1)
 
             # get a list of any trajectories with exactly the same observations.
-            # Then iterate over the list, removing whichever one isn't on disk.
+            # Then remove whichever one isn't on disk.
             
             same_obs = traj_df.query('obs_ids == obs_ids_next')
-            for idx,rw in same_obs.iterrows():
-                traj1 = loadPickle(*os.path.split(traj_df.iloc[idx].traj_file_path))
+            for idx, rw in same_obs.iterrows():
+                traj1 = loadPickle(*os.path.split(rw.traj_file_path))
                 
                 if traj1.traj_id == rw.traj_id:
-                    log.info(f'removing duplicate trajectory {traj_df.iloc[idx+1].traj_id}')
-                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
+                    remove_id = rw.traj_id_next
+                    remove_path = rw.traj_path_next
                 else:
-                    log.info(f'removing duplicate trajectory {traj_df.iloc[idx].traj_id}')
-                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
+                    remove_id = rw.traj_id
+                    remove_path = rw.traj_file_path
+                log.info(f'removing duplicate trajectory {remove_id} from database')
+                self.trajectory_db.removeTrajectoryById(remove_id)
+
+                # only delete the disk file if they're in different physical locations!
+                if rw.traj_file_path != rw.traj_path_next:
+                    shutil.rmtree(os.path.split(remove_path)[0])
+
+                # remove the row from the dataframe to avoid reprocessing it
+                print(idx, traj_df.iloc[idx].traj_id)
+                traj_df.drop(idx)
             
-            # get a list of trajectories which share at least one observation.
-            # These are candidates for being merged, so in auto-mode, we can unpair all the obs and 
-            # delete the traj, then let the candidate finder reanalyse on its next pass.
-            # in non-Auto mode, where there's only one pass, we'll have to leave both traj and let the user decide
+            # get a list of trajectories which share at least one observation. These are candidates for being merged.
+            # So we keep the trajectory with more observations, and unpair the non-shared ones in the other before
+            # deleting it. In theory, the next pass will identify the unpaired obs as possibly to add to the remaining
+            # trajectory. At worst it will identify the unpaired obs as a potential new candidate.
 
-            traj_df['overlapstats'] = traj_df.apply(lambda row: atleastOneObs(row.obs_ids, row.obs_ids_next), axis=1)
-            common_obs = traj_df[traj_df.overlapstats]
+            traj_df['overlapids'] = traj_df.apply(lambda row: atleastOneObs(row.obs_ids, row.obs_ids_next), axis=1)
+            common_obs = traj_df[traj_df.overlapids]
 
-            for idx,rw in common_obs.iterrows():
+            for idx, rw in common_obs.iterrows():
 
-                log.info(f'unpairing obs linked to mergeable events {traj_df.iloc[idx].traj_id} and {traj_df.iloc[idx+1].traj_id}')
+                log.info(f'  checking mergeable events {rw.traj_id} and {rw.traj_id_next}')
+                traj_ids = rw.obs_ids + rw.ign_obs_ids
+                next_ids = rw.obs_ids_next + rw.ign_obs_ids_next
+                if len(traj_ids) >= len(next_ids):
+                    remove_id = rw.traj_id_next
+                    remove_path = rw.traj_path_next
+                    unpair_ids = [id for id in next_ids if id not in traj_ids]
+                else:
+                    remove_id = rw.traj_id
+                    remove_path = rw.traj_file_path
+                    unpair_ids = [id for id in traj_ids if id not in next_ids]
 
-                traj1 = traj_df.iloc[idx]
-                traj2 = traj_df.iloc[idx+1]
-                combined_obs_ids = list(set(traj1.obs_ids + traj2.obs_ids + traj1.ign_obs_ids + traj2.ign_obs_ids))
-                self.observations_db.unpairObs(combined_obs_ids)
-                if self.auto_mode:
-                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx].traj_id)
-                    self.trajectory_db.removeTrajectoryById(traj_df.iloc[idx+1].traj_id)
+                log.info(f'    removing {remove_id}')
+                self.trajectory_db.removeTrajectoryById(remove_id)
+
+                if len(unpair_ids) > 0: 
+                    log.info(f'    unpairing {unpair_ids} from {remove_id}')
+                    self.observations_db.unpairObs(unpair_ids)
+
+                # only remove the physical on-disk files if the locations are different! 
+                if (rw.traj_file_path != rw.traj_path_next) and os.path.isfile(remove_path):
+                    log.info(f'    removing {os.path.split(remove_path)[0]} from disk')
+                    shutil.rmtree(os.path.split(remove_path)[0])
 
         # Finally, scan the disk for trajectories that need to be added to the database.
         # These can arise during distributed processing or phase2 analysis if the jdt_ref changes significantly.
 
-        traj_dir_path = os.path.join(self.output_dir, OUTPUT_TRAJ_DIR)
         # defend against the case where there are no existing trajectories and traj_dir_path doesn't exist
         
         log.info("  Adding found trajectories from: " + traj_dir_path)
@@ -1131,16 +1158,16 @@ class RMSDataHandle(object):
                     full_traj_dir = os.path.join(yyyymmdd_dir_path, traj_dir)
                     if os.path.isdir(full_traj_dir) and (full_traj_dir not in dir_paths):
 
-                        for file_name in glob.glob1(full_traj_dir, '*_trajectory.pickle'):
+                        for file_name in glob.glob('*_trajectory.pickle', root_dir=full_traj_dir):
 
                             if self.trajectoryFileInDtRange(file_name, dt_range=dt_range):
 
-                                self.trajectory_db.addTrajectory(TrajectoryReduced(os.path.join(full_traj_dir, file_name)), force_add=False)
+                                if self.trajectory_db.addTrajectory(TrajectoryReduced(os.path.join(full_traj_dir, file_name)), force_add=False):
+                                    counter += 1
 
                                 # Print every 1000th trajectory
-                                if counter % 1000 == 0:
-                                    log.info(f"   Loaded {counter:6d} trajectories")
-                                counter += 1
+                                if counter % 1000 == 0 and counter > 0:
+                                    log.info(f"   Added {counter:6d} trajectories")
 
                         dir_paths.append(full_traj_dir)
 
@@ -2242,6 +2269,14 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                 # Go through all chunks in time
                 for bin_beg, bin_end in dt_bins:
 
+                    if mcmode != MCMODE_PHASE2:
+
+                        # Update the trajectory database, removing any that no longer exist on disk,
+                        # adding any that exist on disk but are missing in the database, and 
+                        # removing any duplicates from both disk and database
+                       
+                        dh.updateTrajectoryDatabase(dt_range=(bin_beg, bin_end))
+
                     if mcmode & MCMODE_CANDS:
                         log.info("")
                         log.info("PROCESSING TIME BIN:")
@@ -2252,15 +2287,6 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                         dh.unpaired_observations = dh.loadUnpairedObservations(dh.processing_list, 
                             dt_range=(bin_beg, bin_end))
                         log.info(f'loaded {len(dh.unpaired_observations)} observations')
-
-                    if mcmode != MCMODE_PHASE2:
-
-                        # Update the trajectory database, removing any that no longer exist on disk,
-                        # adding any that exist on disk but are missing in the database, and 
-                        # removing any duplicates from both disk and database
-                       
-                        dh.updateTrajectoryDatabase(dt_range=(bin_beg, bin_end))
-
 
                     # Run the trajectory correlator
                     tc = TrajectoryCorrelator(dh, trajectory_constraints, cml_args.velpart, data_in_j2000=True, enableOSM=cml_args.enableOSM)
