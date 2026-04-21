@@ -167,7 +167,6 @@ class ObservationsDatabase():
         if verbose:
             log.info(f'unpairing {obs_ids_str}')
         try:
-            log.info('update: write to obsdb')
             self.dbhandle.execute(f"update paired_obs set status = 0 where obs_id in ({obs_ids_str})")
             self.dbhandle.commit()
             return True
@@ -459,6 +458,9 @@ class TrajectoryDatabase():
         traj_reduced    : a TrajReduced object
         failed          : boolean, if true, add the traj to the fails list
 
+        Returns:
+            true if the trajectory was added, false if it exists already
+
         """
 
         tblname = 'failed_trajectories' if failed else 'trajectories'
@@ -468,7 +470,7 @@ class TrajectoryDatabase():
             res = self.dbhandle.execute(f'select traj_id from {tblname} where status = 1 and traj_id = "{traj_reduced.traj_id}"')
             row = res.fetchone()
             if row is not None and row[0] !='None':
-                return True
+                return False
             
         if verbose:
             log.info(f'adding jdt {traj_reduced.jdt_ref} to {tblname}')
