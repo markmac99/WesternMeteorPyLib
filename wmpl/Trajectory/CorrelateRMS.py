@@ -1042,6 +1042,8 @@ class RMSDataHandle(object):
         def atleastOneObs(obs_ids,next_obs_ids):
             if obs_ids is None or next_obs_ids is None:
                 return False
+            if len(obs_ids)==0 or len(next_obs_ids)==0:
+                return False
             if type(obs_ids[0])==int or type(next_obs_ids[0])==int:
                 return False
             return any(i in next_obs_ids for i in obs_ids)
@@ -1055,7 +1057,7 @@ class RMSDataHandle(object):
         if len(traj_df) > 0:
 
             # sort by date
-            traj_df.sort_values(by='jdt_ref', inplace=True)
+            traj_df.sort_values(by='jdt_ref', inplace=True, ignore_index=True)
 
             # add a column containing the next trajectory's observations
             traj_df['obs_ids_next'] = traj_df.obs_ids.shift(-1)
