@@ -997,7 +997,7 @@ class RMSDataHandle(object):
         else:
             return False
 
-    def updateTrajectoryDatabase(self, dt_range=None):
+    def updateTrajectoryDatabase(self, dt_range=None, verbose=False):
         """ 
         Update the trajectory database to make sure its in line with whats on disk,
         at the same time checking for and removing any duplicate trajectories. 
