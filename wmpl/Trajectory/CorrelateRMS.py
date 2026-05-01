@@ -1071,21 +1071,22 @@ class RMSDataHandle(object):
             
             same_obs = traj_df.query('obs_ids == obs_ids_next')
             for idx, rw in same_obs.iterrows():
-                traj1 = loadPickle(*os.path.split(rw.traj_file_path))
-                
-                if traj1.traj_id == rw.traj_id:
-                    remove_id = rw.traj_id_next
-                    remove_path = rw.traj_path_next
+                if os.path.isfile(rw.traj_file_path):
+                    traj1 = loadPickle(*os.path.split(rw.traj_file_path))
+                    
+                    if traj1.traj_id == rw.traj_id:
+                        remove_id = rw.traj_id_next
+                        remove_path = rw.traj_path_next
+                    else:
+                        remove_id = rw.traj_id
+                        remove_path = rw.traj_file_path
+                    log.info(f'removing duplicate trajectory {remove_id} from database')
+                    # only delete the disk file if they're in different physical locations!
+                    if rw.traj_file_path != rw.traj_path_next:
+                        shutil.rmtree(os.path.split(remove_path)[0])
+                    self.trajectory_db.removeTrajectoryById(remove_id)
                 else:
-                    remove_id = rw.traj_id
-                    remove_path = rw.traj_file_path
-                log.info(f'removing duplicate trajectory {remove_id} from database')
-                self.trajectory_db.removeTrajectoryById(remove_id)
-
-                # only delete the disk file if they're in different physical locations!
-                if rw.traj_file_path != rw.traj_path_next:
-                    shutil.rmtree(os.path.split(remove_path)[0])
-
+                    log.warning(f'unable to remove {rw.traj_file_path} as already removed')
                 # remove the row from the dataframe to avoid reprocessing it
                 print(idx, traj_df.iloc[idx].traj_id)
                 traj_df.drop(idx)
