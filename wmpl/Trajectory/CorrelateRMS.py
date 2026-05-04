@@ -1028,8 +1028,7 @@ class RMSDataHandle(object):
         i = 0
         for traj in traj_list:
             if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
-                if verbose:
-                    log.info(f'    removing traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
+                log.info(f'    removing nonexistent traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
                 self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
                 i += 1
         log.info(f'  removed {i} deleted trajectories')
@@ -1051,6 +1050,9 @@ class RMSDataHandle(object):
 
         log.info("  Looking for duplicate trajectories...")
         # create a dataframe and sort it by date. Duplicates will almost always have very similar dates
+        # refresh the traj_list first to avoid operating on already-removed trajectories
+
+        traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
         traj_df = pd.DataFrame(traj_list)
         # remove legacy trajs without obs_ids 
         if 'obs_ids' in traj_df.columns:
@@ -1071,7 +1073,13 @@ class RMSDataHandle(object):
             
             same_obs = traj_df.query('obs_ids == obs_ids_next')
             for idx, rw in same_obs.iterrows():
-                if os.path.isfile(rw.traj_file_path):
+
+                if not os.path.isfile(rw.traj_file_path):
+                    # trajectory already doesn't exist on disk so remove it from the database
+                    self.trajectory_db.removeTrajectoryById(rw.traj_id)
+               
+                else:
+                    # load the trajectory from disk and determine which one it is
                     traj1 = loadPickle(*os.path.split(rw.traj_file_path))
                     
                     if traj1.traj_id == rw.traj_id:
@@ -1081,14 +1089,14 @@ class RMSDataHandle(object):
                         remove_id = rw.traj_id
                         remove_path = rw.traj_file_path
                     log.info(f'removing duplicate trajectory {remove_id} from database')
-                    # only delete the disk file if they're in different physical locations!
-                    if rw.traj_file_path != rw.traj_path_next:
-                        shutil.rmtree(os.path.split(remove_path)[0])
                     self.trajectory_db.removeTrajectoryById(remove_id)
-                else:
-                    log.warning(f'unable to remove {rw.traj_file_path} as already removed')
+
+                    # only delete the disk file if they're in different physical locations
+                    if rw.traj_file_path != rw.traj_path_next:
+                        log.info(f'   and removing files from {remove_path}')
+                        shutil.rmtree(os.path.split(remove_path)[0])
+
                 # remove the row from the dataframe to avoid reprocessing it
-                print(idx, traj_df.iloc[idx].traj_id)
                 traj_df.drop(idx)
             
             # get a list of trajectories which share at least one observation. These are candidates for being merged.
