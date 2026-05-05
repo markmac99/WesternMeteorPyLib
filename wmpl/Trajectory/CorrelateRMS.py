@@ -1062,7 +1062,14 @@ class RMSDataHandle(object):
             # sort by date
             traj_df.sort_values(by='jdt_ref', inplace=True, ignore_index=True)
 
-            # add a column containing the next trajectory's observations
+            # During candidate finding, the solver attempts to add new observations to existing trajectories.
+            # If the target is a legacy trajectory without obs_ids, the solver assigns simple numerical IDs rather than
+            # true observation ids, which are strings. We can't process these legacy values safely here so exclude them. 
+
+            traj_df['validrow']=traj_df.apply(lambda row: not isinstance(row.obs_ids[0], int), axis=1)
+            traj_df = traj_df[traj_df.validrow]
+
+            # Now add a column containing the next trajectory's observations
             traj_df['obs_ids_next'] = traj_df.obs_ids.shift(-1)
             traj_df['ign_obs_ids_next'] = traj_df.ign_obs_ids.shift(-1)
             traj_df['traj_id_next'] = traj_df.traj_id.shift(-1)
@@ -1099,7 +1106,7 @@ class RMSDataHandle(object):
                 # remove the row from the dataframe to avoid reprocessing it
                 traj_df.drop(idx)
             
-            # get a list of trajectories which share at least one observation. These are candidates for being merged.
+            # Now look for trajectories which share at least one observation. These are candidates for being merged.
             # So we keep the trajectory with more observations, and unpair the non-shared ones in the other before
             # deleting it. In theory, the next pass will identify the unpaired obs as possibly to add to the remaining
             # trajectory. At worst it will identify the unpaired obs as a potential new candidate.
