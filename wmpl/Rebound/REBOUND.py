@@ -22,6 +22,9 @@ import matplotlib.pyplot as plt
 
 from jplephem.spk import SPK
 
+REBOUND_FOUND = False
+_REBOUND_IMPORT_ERROR = None
+
 try:
     # Silence the noisy "pkg_resources is deprecated" warning emitted while importing reboundx
     with warnings.catch_warnings():
@@ -32,13 +35,11 @@ try:
     import astropy.time
 
     REBOUND_FOUND = True
-    rebound_err = None
 
 except ImportError as e:
-    # Surface the actual import error instead of a generic "not found" message, so a real failure
-    #   (e.g. a broken dependency) isn't misreported as a missing package the user already has.
-    REBOUND_FOUND = False
-    rebound_err = e
+    # Keep optional-dependency failures quiet during import. Report the actual cause only if a
+    #   REBOUND function or the command-line interface is used.
+    _REBOUND_IMPORT_ERROR = str(e)
 
 from wmpl.Config import config
 from wmpl.Utils.TrajConversions import (
@@ -52,6 +53,24 @@ from wmpl.Utils.TrajConversions import (
 )
 from wmpl.Utils.Math import rotateVector
 from wmpl.Utils.Earth import calcTrueObliquity
+
+
+def _printReboundUnavailable(include_install_help=False):
+    """ Print the captured REBOUND import failure when REBOUND is intentionally used. """
+
+    print("ERROR: the 'rebound' and 'reboundx' packages are required, but they could not be imported.")
+    if _REBOUND_IMPORT_ERROR is not None:
+        print("The error was: {}".format(_REBOUND_IMPORT_ERROR))
+
+    if include_install_help:
+        print("")
+        print("Install them with:  pip install rebound reboundx")
+        print("")
+        print("Note: on Windows, 'reboundx' has no prebuilt wheel and does not compile with the "
+              "MSVC compiler (it uses C features MSVC lacks). Use one of:")
+        print("  - Windows Subsystem for Linux (WSL2, e.g. Ubuntu) - recommended, builds cleanly, or")
+        print("  - a Linux or macOS machine.")
+        print("'rebound' alone is not enough; 'reboundx' must import successfully too.")
 
 
 # Hill-sphere radii in AU used for close-encounter detection. The Moon (Luna) uses its
@@ -322,7 +341,7 @@ def convertToBarycentric(state_vect, jd, log_file_path="", ephem_source="local",
 
     # Skip if REBOUND is not found
     if not REBOUND_FOUND:
-        print("REBOUND package not found. Install REBOUND and reboundx packages to use the REBOUND functions.")
+        _printReboundUnavailable()
         return None
 
     # If a log file is specified, open it
@@ -665,7 +684,7 @@ def reboundSimulate(
 
     # Skip if REBOUND is not found
     if not REBOUND_FOUND:
-        print("REBOUND package not found. Install REBOUND and reboundx packages to use the REBOUND functions.")
+        _printReboundUnavailable()
         return None
 
     # If the trajectory is given, override the julian_date and state_vect arguments
@@ -891,17 +910,7 @@ if __name__ == "__main__":
     # crashing later with a cryptic "cannot unpack non-iterable NoneType" error.
     if not REBOUND_FOUND:
         print("")
-        print("ERROR: the 'rebound' and 'reboundx' packages are required to run this script, "
-              "but they could not be imported.")
-        print("The error was: {}".format(rebound_err))        
-        print("")
-        print("Install them with:  pip install rebound reboundx")
-        print("")
-        print("Note: on Windows, 'reboundx' has no prebuilt wheel and does not compile with the "
-              "MSVC compiler (it uses C features MSVC lacks). Use one of:")
-        print("  - Windows Subsystem for Linux (WSL2, e.g. Ubuntu) - recommended, builds cleanly, or")
-        print("  - a Linux or macOS machine.")
-        print("'rebound' alone is not enough; 'reboundx' must import successfully too.")
+        _printReboundUnavailable(include_install_help=True)
         sys.exit(1)
 
     ###
