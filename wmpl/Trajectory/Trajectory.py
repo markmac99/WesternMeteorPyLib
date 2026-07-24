@@ -65,17 +65,9 @@ from wmpl.Utils.PyDomainParallelizer import parallelComputeGenerator
 # Text size of image legends
 LEGEND_TEXT_SIZE = 6
 
-# Set up a logger, or get one configured in the calling app if present
-log = logging.getLogger("traj_correlator")
-
-# If no handlers are configured, add a simple console log handler
-# This will be overridden if the calling app sets up its own logger.
-if len(log.handlers) == 0:
-    console_handler = logging.StreamHandler()
-    log_formatter = logging.Formatter()
-    console_handler.setFormatter(log_formatter)
-    log.addHandler(console_handler)
-    log.setLevel(logging.DEBUG)
+# create or attach to a logger. This gets overridden in Trajectory.__init__
+# if the calling function passes a parent logger
+log = logging.getLogger("wmpl_logger")
 
 
 class ObservedPoints(object):
@@ -1997,7 +1989,8 @@ def _MCTrajSolve(params):
 
     i, traj, observations = params
 
-    log.info(f'Run No. {i + 1}')
+    # note: as this is in a spawned or forked child process, no logger is available
+    print(f'Run No. {i + 1}')
 
     traj.run(_mc_run=True, _orig_obs=observations)
 
@@ -2464,7 +2457,8 @@ class Trajectory(object):
         mc_noise_std=1.0, geometric_uncert=False, filter_picks=True, calc_orbit=True, show_plots=True, \
         show_jacchia=False, save_results=True, gravity_correction=True, gravity_factor=1.0, \
         plot_all_spatial_residuals=False, plot_file_type='png', traj_id=None, reject_n_sigma_outliers=3, 
-        mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, l_bfgs_b_cutoff=5):
+        mc_cores=None, fixed_times=None, mc_runs_max=None, enable_OSM_plot=False, l_bfgs_b_cutoff=5,
+        parentlogger=None):
         """ Init the Ceplecha trajectory solver.
 
         Arguments:
@@ -2525,8 +2519,22 @@ class Trajectory(object):
             mc_runs_max: [int] Maximum number of Monte Carlo runs. None by default, which will limit the runs
                 to 10x req_num.
             enable_OSM_plot: [bool] plot the ground track using OS maps as well as the default 
+            l_bfgs_b_cutoff: [int] cutoff for switching timing models - default 5
 
         """
+
+        global log
+        if parentlogger:
+            # if a parent logger was provided, attach to that
+            log = parentlogger
+        else:
+            # if no parent logger was provided, create a console-only
+            # log so that log statements get printed to stdout
+            console_handler = logging.StreamHandler(sys.stdout)
+            log_formatter = logging.Formatter()
+            console_handler.setFormatter(log_formatter)
+            log.addHandler(console_handler)
+            log.setLevel(logging.INFO)    
 
         # All time data must be given relative to this Julian date
         self.jdt_ref = jdt_ref
@@ -6938,6 +6946,12 @@ if __name__ == "__main__":
     ele2 = 240.00
 
     ###
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    log_formatter = logging.Formatter()
+    console_handler.setFormatter(log_formatter)
+    log.addHandler(console_handler)
+    log.setLevel(logging.INFO)    
 
 
     # Init new trajectory solving

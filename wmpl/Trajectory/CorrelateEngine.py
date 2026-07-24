@@ -631,7 +631,7 @@ class TrajectoryCorrelator(object):
             show_plots=False, verbose=verbose, save_results=False, 
             reject_n_sigma_outliers=2, mc_cores=self.traj_constraints.mc_cores, 
             geometric_uncert=self.traj_constraints.geometric_uncert, enable_OSM_plot=self.enableOSM, 
-            l_bfgs_b_cutoff=7)
+            l_bfgs_b_cutoff=7, parentlogger=log)
 
         return traj
 
