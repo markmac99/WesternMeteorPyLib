@@ -1543,6 +1543,10 @@ class RMSDataHandle(object):
             if not hasattr(traj, 'fixed_time_offsets'):
                 traj.fixed_time_offsets = {}
 
+            # check if it has the cutff for timing models
+            if not hasattr(traj, 'l_bfgs_b_cutoff'):
+                traj.l_bfgs_b_cutoff = 7
+
             return traj
 
         except FileNotFoundError:
@@ -2382,7 +2386,8 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                         log.info(f'loaded {len(dh.unpaired_observations)} observations')
 
                     # Run the trajectory correlator
-                    tc = TrajectoryCorrelator(dh, trajectory_constraints, cml_args.velpart, data_in_j2000=True, enableOSM=cml_args.enableOSM)
+                    tc = TrajectoryCorrelator(dh, trajectory_constraints, cml_args.velpart, data_in_j2000=True, enableOSM=cml_args.enableOSM,
+                                              l_bfgs_b_cutoff=7)
                     bin_time_range = [bin_beg, bin_end]
                     num_done = tc.run(event_time_range=event_time_range, mcmode=mcmode, bin_time_range=bin_time_range, verbose=verbose)
 
