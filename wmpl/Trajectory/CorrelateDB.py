@@ -141,26 +141,6 @@ class ObservationsDatabase():
             log.warning(e)
             return False            
 
-        return 
-
-    def addPairedObs(self, obs_id, jdt_ref, verbose=False):
-        """
-        Add or update a single entry in the database to mark an observation paired, setting status = 1
-
-        Parameters:
-        obs_id          : observation ID
-        jdt_ref         : julian reference date of the observation
-        """
-
-        if verbose:
-            log.info(f'adding {obs_id} to paired_obs table')
-        try:
-            self.dbhandle.execute(f"insert or replace into paired_obs values ('{obs_id}', {jdt_ref}, 1)")
-            self.dbhandle.commit()
-            return True
-        except Exception:
-            log.warning(f'failed to add {obs_id} to paired_obs table')
-            return False            
 
     def unpairObs(self, obs_ids, verbose=False):
         """
@@ -278,7 +258,7 @@ class ObservationsDatabase():
                 obs_date = obs_date.replace(tzinfo=datetime.timezone.utc)
 
                 if obs_date >= dt_beg and obs_date < dt_end:
-                    self.addPairedObs(obs_id, datetime2JD(obs_date))
+                    self.addPairedObservations([obs_id], [datetime2JD(obs_date)])
                     i += 1
                 if not i % 100000 and i != 0:
                     log.info(f'moved {i} observations')
