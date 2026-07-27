@@ -1656,6 +1656,43 @@ if __name__ == "__main__":
         )
     sim_wall = time.time() - t_run_start
 
+    ### Work out what happened to each Monte Carlo clone ###
+
+    n_hill = 3.0
+
+    # Diagnostics for the clones only (the nominal solution is keyed by the trajectory ID)
+    clone_diag = {name: diag for name, diag in sim_diagnostics.items() if name in sim_outputs_mc}
+
+    clones_impacted = {}
+    clones_escaped = []
+    clones_survived = []
+    for name in sim_outputs_mc:
+        diag = clone_diag.get(name, {})
+        if diag.get("impact"):
+            clones_impacted.setdefault(diag["impact"]["body"], []).append(name)
+        elif diag.get("escaped"):
+            clones_escaped.append(name)
+        else:
+            clones_survived.append(name)
+
+    # How many clones had a close encounter with each body, and the closest approach over all clones
+    clone_encounters = {}
+    for name, diag in clone_diag.items():
+        for enc in encountersFromMinDistances(diag.get("min_dist_au", {}),
+                                              diag.get("min_time_days", {}), n_hill=n_hill):
+            body = enc["body"]
+            entry = clone_encounters.setdefault(body, {"count": 0, "closest_au": np.inf})
+            entry["count"] += 1
+            entry["closest_au"] = min(entry["closest_au"], enc["min_dist_au"])
+
+    # Clones truncated by an impact or an ejection end at a different epoch than the rest, so mixing
+    # their final elements into the confidence interval would blend different times. Use the clones
+    # that completed the full span, unless too few of them survived to say anything.
+    ci_names = clones_survived if len(clones_survived) >= 2 else list(sim_outputs_mc)
+    ci_uses_survivors_only = (len(clones_survived) >= 2) and (len(clones_survived) < len(sim_outputs_mc))
+
+    ### ###
+
     # Compute the 95% CI for the orbital elements from the Monte Carlo realizations
     a_ci_str = ""
     q_ci_str = ""
@@ -1675,7 +1712,7 @@ if __name__ == "__main__":
         omega_mc = []
         f_mc = []
 
-        for mc_name in sim_outputs_mc:
+        for mc_name in ci_names:
             a = sim_outputs_mc[mc_name][-1][2].a*dist_unit_multiplier
             e = sim_outputs_mc[mc_name][-1][2].e
             a_mc.append(a)
@@ -1736,8 +1773,8 @@ if __name__ == "__main__":
 
     # Detect close encounters (Hill-sphere criterion) from the exact closest approaches recorded at
     # every internal integrator timestep, which resolves the fast Earth/Moon regime that the sampled
-    # output cannot. Needed both for the summary and the report file.
-    n_hill = 3.0
+    # output cannot. Needed both for the summary and the report file. n_hill is set above, where the
+    # clone outcomes are classified with the same threshold.
     nominal_diag = sim_diagnostics.get(traj.traj_id, {})
     encounters = encountersFromMinDistances(
         nominal_diag.get("min_dist_au", {}), nominal_diag.get("min_time_days", {}), n_hill=n_hill)
@@ -1793,10 +1830,24 @@ if __name__ == "__main__":
     if energy_drift is not None:
         print("  Energy drift : {:.2e} (relative)".format(energy_drift))
     print("-" * 78)
-    if len(sim_outputs_mc):
-        print("  Final orbital elements   (nominal  +/- 1 sigma  [95% CI]):")
+
+    # If the object hit something, say so before anything else: the elements below are the state at
+    # the last step before the impact, not a surviving orbit.
+    if impact:
+        print("  *** IMPACT: the object hit {:s} after {:.4f} days ***".format(
+            impact["body"], abs(impact["time_days"])))
+        print("  The elements below are the last state before the impact, not a surviving orbit.")
+        print("-" * 78)
+
+    if impact:
+        header = "  Orbital elements at the moment of impact"
     else:
-        print("  Final orbital elements   (nominal):")
+        header = "  Final orbital elements"
+
+    if len(sim_outputs_mc):
+        print(header + "   (nominal  +/- 1 sigma  [95% CI]):")
+    else:
+        print(header + "   (nominal):")
     print("")
     print("    a    = {:>13.6f}{:s}  {:s}".format(a_val, a_ci_str, a_units))
     print("    q    = {:>13.6f}{:s}  {:s}".format(q_val, q_ci_str, q_units))
@@ -1827,15 +1878,52 @@ if __name__ == "__main__":
     else:
         print("  Close encounters (< {:.0f} Hill radii): none detected".format(n_hill))
 
-    # Impact, if the object hit a body
-    if impact:
-        print("  IMPACT: hit {:s} at t = {:+.4f} d".format(impact["body"], impact["time_days"]))
-
     # Ejection, if the object ran out of the simulation volume
     escaped = nominal_diag.get("escaped")
     if escaped:
-        print("  EJECTED: left the simulation volume at t = {:+.4f} d ({:.1f} AU from the Sun)".format(
-            escaped["time_days"], escaped["dist_au"]))
+        print("  *** EJECTED: the object left the simulation volume after {:.4f} days "
+              "({:.1f} AU from the Sun) ***".format(abs(escaped["time_days"]), escaped["dist_au"]))
+
+    # What happened to the Monte Carlo clones, as a fraction of the whole ensemble
+    if len(sim_outputs_mc):
+
+        n_clones = len(sim_outputs_mc)
+        print("-" * 78)
+        print("  Monte Carlo clone outcomes ({:d} clones):".format(n_clones))
+
+        print("    {:<28s} {:5d}  ({:5.1f}%)".format(
+            "Completed the full span", len(clones_survived), 100.0*len(clones_survived)/n_clones))
+
+        for body in sorted(clones_impacted, key=lambda b: -len(clones_impacted[b])):
+            n_hit = len(clones_impacted[body])
+            print("    {:<28s} {:5d}  ({:5.1f}%)".format(
+                "IMPACTED " + body, n_hit, 100.0*n_hit/n_clones))
+
+        if clones_escaped:
+            print("    {:<28s} {:5d}  ({:5.1f}%)".format(
+                "Left the simulation volume", len(clones_escaped),
+                100.0*len(clones_escaped)/n_clones))
+
+        # Close encounters across the ensemble, which is what the clones are really there to measure
+        if clone_encounters:
+            print("")
+            print("  Clones with a close encounter (< {:.0f} Hill radii):".format(n_hill))
+            for body in sorted(clone_encounters, key=lambda b: -clone_encounters[b]["count"]):
+                entry = clone_encounters[body]
+                print("    {:<10s} {:5d}/{:<5d} ({:5.1f}%)   closest over all clones: "
+                      "{:.6f} AU ({:.0f} km)".format(
+                          body, entry["count"], n_clones, 100.0*entry["count"]/n_clones,
+                          entry["closest_au"], entry["closest_au"]*149597870.7))
+        else:
+            print("")
+            print("  No clone came within {:.0f} Hill radii of any body.".format(n_hill))
+
+        if ci_uses_survivors_only:
+            print("")
+            print("  Note: the confidence intervals above use the {:d} clones that completed the "
+                  "full span;".format(len(clones_survived)))
+            print("  clones that impacted or were ejected ended at a different epoch and are "
+                  "excluded.")
 
     # Divergence / Lyapunov timescale estimated from the Monte Carlo spread
     if lyap is not None:
@@ -1902,6 +1990,12 @@ if __name__ == "__main__":
     with open(results_txt_path, "w") as f:
 
         # Save the nominal orbital elements and the errors
+        # If the object hit something, state it at the very top of the report
+        if impact:
+            f.write("*** IMPACT: the object hit {:s} after {:.4f} days. The elements below are the "
+                    "last\n".format(impact["body"], abs(impact["time_days"])))
+            f.write("*** state before the impact, not a surviving orbit.\n\n")
+
         f.write("Orbital elements {:.2f} days {:s} from the epoch {:.6f} JD (TDB){:s}\n".format(
             achieved_days, direction, traj.jdt_ref,
             "" if abs(achieved_days - sim_days) <= 1e-6
@@ -1943,6 +2037,45 @@ if __name__ == "__main__":
                 hill_str = "" if hill is None else "  ({:.2f} R_Hill)".format(d_min/hill)
                 f.write("  {:<8s} {:12.6f} AU ({:14.1f} km) at t = {:10.4f} d{:s}\n".format(
                     body, d_min, d_min*149597870.7, t_min, hill_str))
+
+        # Save what happened to the Monte Carlo clones
+        if len(sim_outputs_mc):
+
+            n_clones = len(sim_outputs_mc)
+            f.write("\nMonte Carlo clone outcomes ({:d} clones):\n".format(n_clones))
+            f.write("  {:<30s} {:5d}  ({:5.1f}%)\n".format(
+                "Completed the full span", len(clones_survived),
+                100.0*len(clones_survived)/n_clones))
+
+            for body in sorted(clones_impacted, key=lambda b: -len(clones_impacted[b])):
+                hit_names = clones_impacted[body]
+                f.write("  {:<30s} {:5d}  ({:5.1f}%)\n".format(
+                    "IMPACTED " + body, len(hit_names), 100.0*len(hit_names)/n_clones))
+                times = [clone_diag[n]["impact"]["time_days"] for n in hit_names]
+                f.write("      impact times from {:.4f} to {:.4f} d\n".format(
+                    min(times), max(times)))
+
+            if clones_escaped:
+                f.write("  {:<30s} {:5d}  ({:5.1f}%)\n".format(
+                    "Left the simulation volume", len(clones_escaped),
+                    100.0*len(clones_escaped)/n_clones))
+
+            if clone_encounters:
+                f.write("\nClones with a close encounter (< {:.0f} Hill radii):\n".format(n_hill))
+                for body in sorted(clone_encounters, key=lambda b: -clone_encounters[b]["count"]):
+                    entry = clone_encounters[body]
+                    f.write("  {:<10s} {:5d}/{:<5d} ({:5.1f}%)   closest over all clones "
+                            "{:.6f} AU ({:.1f} km)\n".format(
+                                body, entry["count"], n_clones, 100.0*entry["count"]/n_clones,
+                                entry["closest_au"], entry["closest_au"]*149597870.7))
+            else:
+                f.write("\nNo clone came within {:.0f} Hill radii of any body.\n".format(n_hill))
+
+            if ci_uses_survivors_only:
+                f.write("\nNote: the confidence intervals above use the {:d} clones that completed\n".format(
+                    len(clones_survived)))
+                f.write("the full span. Clones that impacted or were ejected ended at a different\n")
+                f.write("epoch, so mixing their final elements in would blend different times.\n")
 
         # Save the Tisserand parameter and the run's provenance
         if reference_frame == "heliocentric":
@@ -2280,6 +2413,23 @@ if __name__ == "__main__":
         "closest_approach_times_days": nominal_diag.get("min_time_days"),
         "impact": impact,
         "escaped": nominal_diag.get("escaped"),
+        "clone_outcomes": {
+            "n_clones": len(sim_outputs_mc),
+            "n_completed": len(clones_survived),
+            "n_escaped": len(clones_escaped),
+            "impacted": {body: {"count": len(names),
+                                "fraction": len(names)/len(sim_outputs_mc),
+                                "times_days": [clone_diag[n]["impact"]["time_days"] for n in names]}
+                         for body, names in clones_impacted.items()},
+            "close_encounters": {body: {"count": entry["count"],
+                                        "fraction": entry["count"]/len(sim_outputs_mc),
+                                        "closest_au": entry["closest_au"]}
+                                 for body, entry in clone_encounters.items()},
+            "ci_uses_survivors_only": ci_uses_survivors_only,
+            "n_hill_threshold": n_hill,
+        } if len(sim_outputs_mc) else None,
+        "clone_closest_approaches_au": {name: diag.get("min_dist_au")
+                                        for name, diag in clone_diag.items()},
         "energy_rel_drift": nominal_diag.get("energy_rel_drift"),
         "divergence": lyap,
         "nominal": _elementSeries(sim_outputs),
