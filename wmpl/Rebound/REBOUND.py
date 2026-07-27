@@ -516,6 +516,57 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
     }
 
 
+def tisserandParameterJupiter(a, e, inc):
+    """ Compute the Tisserand parameter with respect to Jupiter, a quasi-invariant of the encounter
+    geometry that is the standard way to classify the dynamical origin of a small body.
+
+    Conventional interpretation:
+        T_J > 3        asteroidal orbit (decoupled from Jupiter),
+        2 < T_J < 3    Jupiter-family-comet-like orbit,
+        T_J < 2        Halley-type / long-period comet-like orbit.
+
+    Arguments:
+        a: [float] Semi-major axis in AU (must be positive, i.e. a bound heliocentric orbit).
+        e: [float] Eccentricity.
+        inc: [float] Inclination in radians (measured from the ecliptic, which is used here as an
+            approximation to Jupiter's orbital plane; the two differ by ~1.3 degrees).
+
+    Return:
+        [float or None] The Tisserand parameter, or None if the orbit is unbound or degenerate so
+            that the parameter is not defined.
+    """
+
+    a_jupiter = 5.204267  # AU
+
+    if (a is None) or (a <= 0) or (e is None) or (e >= 1):
+        return None
+
+    return a_jupiter/a + 2.0*np.cos(inc)*np.sqrt((a/a_jupiter)*(1.0 - e**2))
+
+
+def tisserandClass(t_j):
+    """ Return the conventional dynamical class implied by a Tisserand parameter (see
+    tisserandParameterJupiter).
+
+    Arguments:
+        t_j: [float or None] Tisserand parameter with respect to Jupiter.
+
+    Return:
+        [str] A short description of the dynamical class.
+    """
+
+    if t_j is None:
+        return "undefined (unbound orbit)"
+
+    if t_j > 3.0:
+        return "asteroidal (T_J > 3)"
+
+    if t_j > 2.0:
+        return "Jupiter-family-comet-like (2 < T_J < 3)"
+
+    return "Halley-type/long-period-comet-like (T_J < 2)"
+
+
 def convertToBarycentric(state_vect, jd, log_file_path="", ephem_source="local", jpl_ephem_data=None,
                          earth_state=None):
     """ Takes a state vector in ECI coordinates (m and m/s), Julian date and converts from ECI (geocentric) to
@@ -846,6 +897,14 @@ def _integrateParticles(task):
     sim.N_active = len(planet_names)
     sim.testparticle_type = 0
 
+    # Stop following a particle that runs away, instead of integrating it forever at growing cost.
+    # The bound is well outside Neptune, so it can only be triggered by the integrated object.
+    max_dist_au = task.get("max_dist_au", 1000.0)
+    sim.exit_max_distance = max_dist_au
+
+    # Total energy at the start, used to report the integrator's energy conservation
+    energy_start = sim.energy()
+
     # Indices of the bodies and the test particles in the simulation
     n_planets = len(planet_names)
     earth_i = planet_names.index("Earth")
@@ -863,6 +922,7 @@ def _integrateParticles(task):
             "min_time": {b: np.nan for b in planet_names},
             "departed": False,
             "impact": None,
+            "escaped": None,
         }
 
     def heartbeat(sim_pointer):
@@ -951,6 +1011,20 @@ def _integrateParticles(task):
             sim.collision = "none"
             sim.integrate(t_out)
 
+        except rb.Escape:
+
+            # The object was thrown out of the simulation volume (unbound or ejected). Record it and
+            # stop, since integrating a runaway particle only gets more expensive.
+            t_esc = sim.t/(2*np.pi)*365.25
+            for pname, pidx in particle_idx.items():
+                if pidx >= sim.N:
+                    continue
+                o = sim.particles[pidx]
+                d_sun = (o.x**2 + o.y**2 + o.z**2)**0.5
+                if d_sun > max_dist_au:
+                    track[pname]["escaped"] = {"time_days": t_esc, "dist_au": d_sun}
+            break
+
         sim.move_to_hel()
 
         for name in particle_names:
@@ -971,6 +1045,17 @@ def _integrateParticles(task):
 
             outputs[name].append([t_out, state_vect_hel, orb_ns, planet_dists])
 
+    # Relative energy drift over the integration, as an integrator-quality diagnostic. The test
+    # particles are massless, so this measures the massive subsystem the object moves through.
+    # The energy must be evaluated in the same frame as at the start (the loop leaves the simulation
+    # in the heliocentric frame, and kinetic energy is frame-dependent).
+    sim.move_to_com()
+    energy_end = sim.energy()
+    if energy_start != 0:
+        energy_drift = abs((energy_end - energy_start)/energy_start)
+    else:
+        energy_drift = None
+
     # Assemble the picklable per-particle diagnostics (times converted to days)
     diagnostics = {}
     for name in particle_names:
@@ -983,6 +1068,8 @@ def _integrateParticles(task):
                               for b in planet_names},
             "departed": st["departed"],
             "impact": st["impact"],
+            "escaped": st["escaped"],
+            "energy_rel_drift": energy_drift,
         }
 
     return {"outputs": outputs, "diagnostics": diagnostics}
@@ -992,7 +1079,7 @@ def reboundSimulate(
         julian_date, state_vect, traj=None,
         direction="forward", sim_days=60, n_outputs=500, obj_name="obj", obj_mass=0.0, mc_runs=100,
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
-        show_progress=True, return_diagnostics=False, verbose=False):
+        show_progress=True, return_diagnostics=False, random_seed=None, verbose=False):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -1025,6 +1112,9 @@ def reboundSimulate(
         return_diagnostics: [bool] If True, also return the per-particle diagnostics dictionary
             (exact closest approaches and impacts measured during the integration). Default False,
             which preserves the two-value return signature.
+        random_seed: [int] Seed for the Monte Carlo state-vector sampling. Pass a value to make a
+            run exactly reproducible; None (default) draws a fresh, unpredictable seed. The sampling
+            is done in the parent process, so results do not depend on the number of cores used.
         verbose: [bool] If True, print out the progress of the simulation.
 
     Return:
@@ -1071,11 +1161,16 @@ def reboundSimulate(
         # Extract the state vector covariance matrix
         cov = traj.state_vect_cov
 
+        # Draw the realizations from a seeded generator so a run can be reproduced exactly. The
+        # sampling happens here in the parent process, so the results do not depend on how many
+        # cores the integration is spread over.
+        rng = np.random.default_rng(random_seed)
+
         # Sample the state vector from the uncertainties
         for i in range(mc_runs):
 
             # Sample the state vector from the uncertainties
-            sv_realization = np.random.multivariate_normal(state_vect, cov)
+            sv_realization = rng.multivariate_normal(state_vect, cov)
 
             state_vect_realizations.append(sv_realization)
 
@@ -1281,7 +1376,9 @@ if __name__ == "__main__":
 
     parser.add_argument("--days", type=float, help="Run the simulation for the given number of days.", default=60)
 
-    parser.add_argument("--forward", type=str, help="Run the simulation forward for the given number of days.")
+    parser.add_argument("--forward", type=float, nargs="?", const=0.0, default=None,
+                        help="Run the simulation forward in time. Optionally give the number of days "
+                        "(e.g. --forward 100); if no value is given, --days is used.")
 
     parser.add_argument("--mc", type=int, help="Run the simulation for the given number of Monte Carlo simulations."
                         "The default is 0", default=0)
@@ -1297,13 +1394,26 @@ if __name__ == "__main__":
                         help="Number of parallel processes used to integrate the Monte Carlo "
                         "realizations. Default: all but one core.")
 
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for the Monte Carlo sampling, making a run exactly "
+                        "reproducible. If not given, a seed is drawn and reported.")
+
     parser.add_argument("--verbose", action="store_true", help="Print out the progress of the simulation.")
 
     args = parser.parse_args()
 
-    # Extract the number of days from the arguments and the simulation direction
-    sim_days = args.days
-    direction = "backward" if args.forward is None else "forward"
+    # Extract the number of days from the arguments and the simulation direction. --forward may be
+    # given on its own (use --days) or with its own number of days.
+    if args.forward is None:
+        direction = "backward"
+        sim_days = args.days
+    else:
+        direction = "forward"
+        sim_days = args.forward if args.forward > 0 else args.days
+
+    # Seed for the Monte Carlo sampling. If none was given, draw one and report it, so that any run
+    # can be reproduced afterwards with --seed.
+    random_seed = args.seed if args.seed is not None else int(np.random.SeedSequence().entropy % (2**32))
 
     # Source of the planetary ephemeris
     ephem_source = "horizons" if args.horizons else "local"
@@ -1351,7 +1461,8 @@ if __name__ == "__main__":
     sim_outputs, sim_outputs_mc, sim_diagnostics = reboundSimulate(
         None, None, traj=traj, direction=direction, sim_days=sim_days,
         obj_name=traj.traj_id, mc_runs=args.mc, reference_frame=reference_frame,
-        ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True, verbose=args.verbose
+        ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True,
+        random_seed=random_seed, verbose=args.verbose
         )
     sim_wall = time.time() - t_run_start
 
@@ -1480,8 +1591,14 @@ if __name__ == "__main__":
     print("  Start epoch  : {:.6f} JD (TDB)".format(traj.jdt_ref))
     print("  Final epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(final_epoch_jd, time_utc.iso))
     if len(sim_outputs_mc):
-        print("  Monte Carlo  : {:d} realizations on {:d} core(s)".format(len(sim_outputs_mc), n_cpu))
+        print("  Monte Carlo  : {:d} realizations on {:d} core(s), seed {:d}".format(
+            len(sim_outputs_mc), n_cpu, random_seed))
     print("  Runtime      : {:.1f} s".format(sim_wall))
+
+    # Integrator quality: relative energy drift of the massive subsystem
+    energy_drift = nominal_diag.get("energy_rel_drift")
+    if energy_drift is not None:
+        print("  Energy drift : {:.2e} (relative)".format(energy_drift))
     print("-" * 78)
     if len(sim_outputs_mc):
         print("  Final orbital elements   (nominal  +/- 1 sigma  [95% CI]):")
@@ -1495,6 +1612,16 @@ if __name__ == "__main__":
     print("    peri = {:>13.6f}{:s}  deg".format(peri_val, omega_ci_str))
     print("    node = {:>13.6f}{:s}  deg".format(node_val, Omega_ci_str))
     print("    f    = {:>13.6f}{:s}  deg".format(f_val, f_ci_str))
+
+    # Tisserand parameter with respect to Jupiter and the dynamical class it implies. Only
+    # meaningful for a heliocentric orbit.
+    if reference_frame == "heliocentric":
+        t_j = tisserandParameterJupiter(sim_outputs[-1][2].a, e_val, sim_outputs[-1][2].inc)
+        if t_j is None:
+            print("    T_J  =        undefined  ({:s})".format(tisserandClass(t_j)))
+        else:
+            print("    T_J  = {:>13.6f}       {:s}".format(t_j, tisserandClass(t_j)))
+
     print("-" * 78)
 
     # Close-encounter summary (exact minima, measured every integrator timestep)
@@ -1510,6 +1637,12 @@ if __name__ == "__main__":
     # Impact, if the object hit a body
     if impact:
         print("  IMPACT: hit {:s} at t = {:+.4f} d".format(impact["body"], impact["time_days"]))
+
+    # Ejection, if the object ran out of the simulation volume
+    escaped = nominal_diag.get("escaped")
+    if escaped:
+        print("  EJECTED: left the simulation volume at t = {:+.4f} d ({:.1f} AU from the Sun)".format(
+            escaped["time_days"], escaped["dist_au"]))
 
     # Divergence / Lyapunov timescale estimated from the Monte Carlo spread
     if lyap is not None:
@@ -1591,6 +1724,31 @@ if __name__ == "__main__":
                 hill_str = "" if hill is None else "  ({:.2f} R_Hill)".format(d_min/hill)
                 f.write("  {:<8s} {:12.6f} AU ({:14.1f} km) at t = {:10.4f} d{:s}\n".format(
                     body, d_min, d_min*149597870.7, t_min, hill_str))
+
+        # Save the Tisserand parameter and the run's provenance
+        if reference_frame == "heliocentric":
+            t_j = tisserandParameterJupiter(sim_outputs[-1][2].a, sim_outputs[-1][2].e,
+                                            sim_outputs[-1][2].inc)
+            if t_j is None:
+                f.write("\nTisserand parameter w.r.t. Jupiter: undefined ({:s})\n".format(
+                    tisserandClass(t_j)))
+            else:
+                f.write("\nTisserand parameter w.r.t. Jupiter: T_J = {:.6f}  -> {:s}\n".format(
+                    t_j, tisserandClass(t_j)))
+
+        if len(sim_outputs_mc):
+            f.write("\nMonte Carlo: {:d} realizations, random seed {:d} "
+                    "(pass --seed {:d} to reproduce this run)\n".format(
+                        len(sim_outputs_mc), random_seed, random_seed))
+
+        if nominal_diag.get("energy_rel_drift") is not None:
+            f.write("Relative energy drift of the massive subsystem: {:.3e}\n".format(
+                nominal_diag["energy_rel_drift"]))
+
+        if nominal_diag.get("escaped"):
+            f.write("\nEJECTED: the object left the simulation volume at t = {:.4f} d, "
+                    "{:.2f} AU from the Sun.\n".format(
+                        nominal_diag["escaped"]["time_days"], nominal_diag["escaped"]["dist_au"]))
 
         # Save any impact detected with REBOUND's collision detection
         if impact:
@@ -1737,6 +1895,10 @@ if __name__ == "__main__":
         axs[2, 2].plot(t, planet_dist, label=planet)
 
     axs[2, 2].set_ylabel("Distance [AU]")
+
+    # Start the outer-planet distance axis at zero, so the distances are read against the Sun
+    axs[2, 2].set_ylim(ymin=0)
+
     axs[2, 2].legend()
 
 
