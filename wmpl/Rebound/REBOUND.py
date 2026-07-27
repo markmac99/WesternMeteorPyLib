@@ -1340,6 +1340,12 @@ if __name__ == "__main__":
     ### ###
 
     
+    # State the integration span up front, so it is visible while the integration is running and
+    # not only in the summary printed at the end
+    print("Integrating {:.2f} days {:s} from the reference epoch {:.6f} JD (TDB) = {:s} UTC.".format(
+        sim_days, direction, traj.jdt_ref,
+        astropy.time.Time(traj.jdt_ref, format='jd', scale='utc').iso))
+
     # Run the simulation for the given number of days from the epoch of the trajectory
     t_run_start = time.time()
     sim_outputs, sim_outputs_mc, sim_diagnostics = reboundSimulate(
@@ -1460,7 +1466,16 @@ if __name__ == "__main__":
     print("  REBOUND orbit integration  |  {:s}".format(str(traj.traj_id)))
     print(hdr)
     print("  Ephemeris    : {:s}".format("JPL Horizons (web)" if args.horizons else "local DE430"))
-    print("  Direction    : {:s}, {:.2f} days".format(direction, sim_days))
+
+    # Always state how far the integration actually went, and flag it if the integration stopped
+    # short of the request (for example because the object impacted a body)
+    achieved_days = abs(final_sim_days)
+    if abs(achieved_days - sim_days) > 1e-6:
+        print("  Integration  : {:.2f} days {:s}  (requested {:.2f} days, stopped early)".format(
+            achieved_days, direction, sim_days))
+    else:
+        print("  Integration  : {:.2f} days {:s}".format(achieved_days, direction))
+
     print("  Frame        : {:s}".format(reference_frame))
     print("  Start epoch  : {:.6f} JD (TDB)".format(traj.jdt_ref))
     print("  Final epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(final_epoch_jd, time_utc.iso))
@@ -1535,7 +1550,10 @@ if __name__ == "__main__":
     with open(results_txt_path, "w") as f:
 
         # Save the nominal orbital elements and the errors
-        f.write("Orbital elements {:.2f} days from the epoch {:.6f} {:s}\n".format(sim_days, traj.jdt_ref, direction))
+        f.write("Orbital elements {:.2f} days {:s} from the epoch {:.6f} JD (TDB){:s}\n".format(
+            achieved_days, direction, traj.jdt_ref,
+            "" if abs(achieved_days - sim_days) <= 1e-6
+            else " (requested {:.2f} days, stopped early)".format(sim_days)))
         f.write("a    = {:>10.6f}{:s} {:s}\n".format(sim_outputs[-1][2].a*dist_unit_multiplier, a_ci_str, a_units))
         f.write("q    = {:>10.6f}{:s} {:s}\n".format((1 - sim_outputs[-1][2].e)*sim_outputs[-1][2].a*dist_unit_multiplier, q_ci_str, q_units))
         f.write("e    = {:>10.6f}{:s}\n".format(sim_outputs[-1][2].e, e_ci_str))
