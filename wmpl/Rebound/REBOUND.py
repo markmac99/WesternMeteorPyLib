@@ -10,6 +10,7 @@ from that shell. Installing only 'rebound' is not enough; 'reboundx' must import
 import os
 import re
 import sys
+import json
 import time
 import warnings
 import concurrent.futures
@@ -233,7 +234,15 @@ def findEarthDepartureIndex(sim_outputs, n_hill=3.0):
 
 
 def detectCloseEncounters(sim_outputs, n_hill=3.0):
-    """ Detect close encounters between the integrated object and the planets (and the Moon).
+    """ Detect close encounters between the integrated object and the planets (and the Moon), by
+    scanning the sampled output.
+
+    DEPRECATED for new code, because scanning the output is sampling-limited: near the Earth the
+    object can cross a large fraction of the Moon's detection sphere between two output samples, so a
+    lunar encounter can be missed outright or its minimum distance overestimated (by ~60000 km at
+    n_outputs = 100 on a real trajectory). Prefer encountersFromMinDistances, which uses the exact
+    minima recorded at every internal integrator timestep. This function is kept for callers that
+    only have sampled output to work from.
 
     A close encounter is flagged when the minimum object-body distance drops below n_hill times
     the body's Hill-sphere radius (see HILL_RADII_AU). The Hill sphere is the standard criterion
@@ -1233,7 +1242,10 @@ def reboundSimulate(
         sim_days: [float] Length of integration in days, default is 60 days.
         n_outputs: [int] Number of outputs (samples along the simulation), default is 500.
         obj_name: [str] Name of the object that's being integrated, default is "obj".
-        obj_mass: [float] Mass of object in solar masses if asteroid or larger object, default is 0.0.
+        obj_mass: [float] Accepted for backwards compatibility but ignored: the integrated object is
+            always treated as a massless test particle, so that it cannot perturb the planets and the
+            Monte Carlo realizations cannot perturb each other. Give the object a mass only by
+            editing _integrateParticles, and note that N_active would have to change with it.
         mc_runs: [int] Number of Monte Carlo simulations to run, default is 100.
         reference_frame: [str] Reference frame to use for the state vector. Options:
             - "heliocentric" (default)
@@ -1611,7 +1623,11 @@ if __name__ == "__main__":
         print("Running the simulation in geocentric reference frame.")
 
     
-    # Set semi-major axis and periapsis units depending on the reference frame
+    # Set semi-major axis and periapsis units depending on the reference frame. Note that this
+    # multiplier applies only to the orbital elements: the object-body distances, the close-encounter
+    # distances and the divergence figures are always reported in AU (with km given alongside where
+    # it helps), because they are distances between bodies rather than orbit sizes and so do not
+    # depend on the frame the elements are expressed in.
     a_units = "AU"
     q_units = "AU"
     dist_unit_multiplier = 1.0  # Default is AU
@@ -2216,8 +2232,68 @@ if __name__ == "__main__":
     plt.savefig(plot_png_path)
 
     # Report the saved outputs
+    ### Machine-readable results, so downstream analysis does not have to parse the text report ###
+
+    results_json_path = os.path.join(out_dir, "rebound_simulation_results.json")
+
+    def _elementSeries(rows):
+        """ Convert one run's outputs into plain lists of floats. """
+        return {
+            "time_days": [row[0]/(2*np.pi)*365.25 for row in rows],
+            "a_au": [row[2].a for row in rows],
+            "e": [row[2].e for row in rows],
+            "incl_deg": [np.degrees(row[2].inc) for row in rows],
+            "peri_deg": [np.degrees(row[2].omega) for row in rows],
+            "node_deg": [np.degrees(row[2].Omega) for row in rows],
+            "f_deg": [np.degrees(row[2].f) for row in rows],
+            "body_distances_au": {body: [row[3][body] for row in rows] for body in dist_bodies},
+        }
+
+    results_json = {
+        "traj_id": str(traj.traj_id),
+        "run": {
+            "integration_days": achieved_days,
+            "requested_days": sim_days,
+            "direction": direction,
+            "reference_frame": reference_frame,
+            "ephemeris": "horizons" if args.horizons else "local_de430",
+            "n_outputs": args.outputs,
+            "beta": beta,
+            "start_epoch_jd_tdb": traj.jdt_ref,
+            "final_epoch_jd_tdb": final_epoch_jd,
+            "final_epoch_utc": time_utc.iso,
+            "mc_runs": len(sim_outputs_mc),
+            "random_seed": random_seed,
+            "runtime_s": sim_wall,
+        },
+        "final_elements": {
+            "a": a_val, "a_units": a_units,
+            "q": q_val, "q_units": q_units,
+            "e": e_val,
+            "incl_deg": i_val, "peri_deg": peri_val, "node_deg": node_val, "f_deg": f_val,
+            "tisserand_jupiter": (tisserandParameterJupiter(
+                sim_outputs[-1][2].a, e_val, sim_outputs[-1][2].inc)
+                if reference_frame == "heliocentric" else None),
+        },
+        "encounters": encounters,
+        "closest_approaches_au": nominal_diag.get("min_dist_au"),
+        "closest_approach_times_days": nominal_diag.get("min_time_days"),
+        "impact": impact,
+        "escaped": nominal_diag.get("escaped"),
+        "energy_rel_drift": nominal_diag.get("energy_rel_drift"),
+        "divergence": lyap,
+        "nominal": _elementSeries(sim_outputs),
+        "monte_carlo": {name: _elementSeries(rows) for name, rows in sim_outputs_mc.items()},
+    }
+
+    with open(results_json_path, "w") as jf:
+        json.dump(results_json, jf, indent=1, default=float)
+
+    ### ###
+
     print("  Saved report : {:s}".format(results_txt_path))
     print("  Saved plot   : {:s}".format(plot_png_path))
+    print("  Saved data   : {:s}".format(results_json_path))
     print(hdr)
 
     plt.show()
