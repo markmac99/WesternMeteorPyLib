@@ -73,18 +73,27 @@ def _printReboundUnavailable(include_install_help=False):
         print("'rebound' alone is not enough; 'reboundx' must import successfully too.")
 
 
-# Hill-sphere radii in AU used for close-encounter detection. The Moon (Luna) uses its
-# Earth-relative Hill radius. The Sun is excluded (it has no Hill sphere in this context).
+# Hill-sphere radii in AU used for close-encounter detection.
+#
+# Convention: r_H = a*(m/(3*M_sun))**(1/3), i.e. evaluated at the semi-major axis with no
+# eccentricity factor. The alternative perihelion form, a*(1 - e)*(m/(3*M_sun))**(1/3), gives a
+# smaller sphere; the larger value is used here deliberately, because these radii define a
+# screening threshold for close encounters and a more inclusive sphere is the safer choice.
+# The values are computed from the same GM table the simulation masses come from
+# (reboundBodyMassSolar), so the table is self-consistent and reproducible.
+#
+# The Moon (Luna) uses its Earth-relative Hill radius, a_moon*(m_moon/(3*m_earth))**(1/3).
+# The Sun is excluded (it has no Hill sphere in this context).
 HILL_RADII_AU = {
-    "Mercury": 0.00122,
-    "Venus":   0.00673,
-    "Earth":   0.00981,
-    "Luna":    0.000411,
-    "Mars":    0.00658,
-    "Jupiter": 0.33820,
-    "Saturn":  0.42850,
-    "Uranus":  0.46340,
-    "Neptune": 0.76890,
+    "Mercury": 0.001475,  # a = 0.387098 AU
+    "Venus":   0.006759,  # a = 0.723332 AU
+    "Earth":   0.010004,  # a = 1.000000 AU
+    "Luna":    0.000411,  # Earth-relative, a = 384400 km
+    "Mars":    0.007246,  # a = 1.523679 AU
+    "Jupiter": 0.355322,  # a = 5.204267 AU
+    "Saturn":  0.437671,  # a = 9.582017 AU
+    "Uranus":  0.469492,  # a = 19.229411 AU
+    "Neptune": 0.776641,  # a = 30.103658 AU
 }
 
 
@@ -391,31 +400,69 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
                 "separation_start_au": [float] initial RMS separation,
                 "separation_end_au":   [float] final RMS separation,
                 "growth_factor":       [float] end/start separation ratio,
+                "n_truncated":         [int] realizations that ended early (e.g. impacted),
+                "n_samples_used":      [int] samples entering the fits,
+                "saturated":           [bool] the ensemble spread past 10% of its heliocentric
+                                           distance, so the linearised picture has broken down,
+                "heliocentric_distance_au": [float] mean heliocentric distance over the fit,
             }
+        "growth" is "exponential" only when the log-linear fit is good in absolute terms and
+        clearly better than the linear one; "saturated" when the ensemble is no longer compact;
+        "linear" for regular motion; and "undetermined" when neither law describes the data. A
+        realization that ends early contributes only over its own length and does not shorten the
+        analysis for the rest of the ensemble.
     """
 
     if (not sim_outputs) or (len(sim_outputs_mc) < 2):
         return None
 
-    # Use the time span covered by every realization (a realization can end early if it impacted)
-    n_samples = min([len(sim_outputs)] + [len(v) for v in sim_outputs_mc.values()])
-    if n_samples < 4:
+    # Fit-acceptance thresholds. These are deliberately strict: an exponential law is only claimed
+    # when it clearly describes the data and clearly beats the linear alternative. Loose thresholds
+    # will happily report a confident Lyapunov time from two equally poor fits.
+    r2_min = 0.90
+    r2_margin = 0.05
+
+    # Separation at which the ensemble is no longer a compact cloud around the nominal solution.
+    # Beyond this the linearised picture underlying a Lyapunov exponent has broken down (the growth
+    # is dominated by along-track phase drift), so no exponent is claimed.
+    saturation_fraction = 0.10
+
+    n_nominal = len(sim_outputs)
+
+    # Each realization contributes over its own length: a realization truncated early (for example
+    # by an impact) must not shorten the analysis for all the others.
+    sq_sum = np.zeros(n_nominal)
+    counts = np.zeros(n_nominal, dtype=int)
+    n_truncated = 0
+
+    nominal_pos = np.array([row[1][:3] for row in sim_outputs])
+
+    for mc_name in sim_outputs_mc:
+
+        mc_rows = sim_outputs_mc[mc_name]
+        n_common = min(n_nominal, len(mc_rows))
+        if n_common < len(sim_outputs):
+            n_truncated += 1
+        if n_common < 2:
+            continue
+
+        mc_pos = np.array([mc_rows[i][1][:3] for i in range(n_common)])
+        sq_sum[:n_common] += np.sum((mc_pos - nominal_pos[:n_common])**2, axis=1)
+        counts[:n_common] += 1
+
+    # Keep the samples where at least two realizations still contribute
+    valid = counts >= 2
+    if np.count_nonzero(valid) < 4:
         return None
 
-    # Elapsed time in days (positive for both integration directions)
+    # Truncate at the first sample that falls below two contributing realizations
+    last = int(np.argmax(~valid)) if (~valid).any() else n_nominal
+    if last < 4:
+        return None
+
+    delta = np.sqrt(sq_sum[:last]/counts[:last])
     t_days = np.array([abs(sim_outputs[i][0] - sim_outputs[0][0])/(2*np.pi)*365.25
-                       for i in range(n_samples)])
-
-    # Nominal heliocentric positions (AU)
-    nominal_pos = np.array([sim_outputs[i][1][:3] for i in range(n_samples)])
-
-    # RMS separation of the realizations from the nominal solution at each time
-    sq_sum = np.zeros(n_samples)
-    for mc_name in sim_outputs_mc:
-        mc_pos = np.array([sim_outputs_mc[mc_name][i][1][:3] for i in range(n_samples)])
-        sq_sum += np.sum((mc_pos - nominal_pos)**2, axis=1)
-
-    delta = np.sqrt(sq_sum/len(sim_outputs_mc))
+                       for i in range(last)])
 
     # Drop the first sample (t = 0) and any non-positive separations before taking the logarithm
     mask = (t_days > 0) & (delta > 0)
@@ -434,27 +481,38 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
     r2_exp = fit_exp.rvalue**2
     r2_lin = fit_lin.rvalue**2
 
-    # Only call it exponential if the ln-linear fit is genuinely better and the rate is positive
+    # Has the ensemble spread to a significant fraction of its own heliocentric distance?
+    helio_dist = float(np.mean(np.linalg.norm(nominal_pos[:last], axis=1)))
+    saturated = bool(delta[-1] > saturation_fraction*helio_dist) if helio_dist > 0 else False
+
+    # Only call it exponential if the ln-linear fit is genuinely good, clearly beats the linear
+    # alternative, has a positive rate, and the ensemble has not saturated
     growth = "undetermined"
     lyap_time = None
     lam = None
-    if (fit_exp.slope > 0) and (r2_exp > r2_lin + 0.01) and (r2_exp > 0.5):
+    if saturated:
+        growth = "saturated"
+    elif (fit_exp.slope > 0) and (r2_exp >= r2_min) and (r2_exp >= r2_lin + r2_margin):
         growth = "exponential"
         lam = fit_exp.slope
         lyap_time = 1.0/lam
-    elif r2_lin > 0.5:
+    elif r2_lin >= r2_min:
         growth = "linear"
 
     return {
         "n_realizations": len(sim_outputs_mc),
+        "n_truncated": n_truncated,
+        "n_samples_used": int(np.count_nonzero(mask)),
         "growth": growth,
+        "saturated": saturated,
         "lyapunov_time_days": lyap_time,
         "lambda_per_day": lam,
         "r2_exponential": r2_exp,
         "r2_linear": r2_lin,
-        "separation_start_au": float(delta[mask][0]),
+        "separation_start_au": float(d_fit[0]),
         "separation_end_au": float(delta[-1]),
-        "growth_factor": float(delta[-1]/delta[mask][0]) if delta[mask][0] > 0 else None,
+        "growth_factor": float(delta[-1]/d_fit[0]),
+        "heliocentric_distance_au": helio_dist,
     }
 
 
@@ -1445,6 +1503,9 @@ if __name__ == "__main__":
             lyap["n_realizations"]))
         print("    Separation from nominal: {:.3e} -> {:.3e} AU  (x{:.1f})".format(
             lyap["separation_start_au"], lyap["separation_end_au"], lyap["growth_factor"]))
+        if lyap["n_truncated"]:
+            print("    {:d} realization(s) ended early and contributed only over their own span.".format(
+                lyap["n_truncated"]))
         if lyap["growth"] == "exponential":
             print("    Growth is exponential: Lyapunov time ~ {:.1f} d  "
                   "(lambda = {:.4f} /d, R2 = {:.3f})".format(
@@ -1454,10 +1515,16 @@ if __name__ == "__main__":
             print("    Growth is linear (regular motion, R2 = {:.3f}); no exponential divergence "
                   "detected".format(lyap["r2_linear"]))
             print("    over this interval, so no Lyapunov time can be derived from it.")
+        elif lyap["growth"] == "saturated":
+            print("    The ensemble has spread to {:.1f}% of its heliocentric distance, so it is no "
+                  "longer a".format(100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"]))
+            print("    compact cloud and no Lyapunov exponent is derived. Shorten the integration "
+                  "to estimate one.")
         else:
             print("    Growth fits neither a clean exponential nor a linear law "
-                  "(R2_exp = {:.3f}, R2_lin = {:.3f}).".format(
+                  "(R2_exp = {:.3f}, R2_lin = {:.3f}),".format(
                       lyap["r2_exponential"], lyap["r2_linear"]))
+            print("    so no divergence timescale is claimed.")
     print(hdr)
 
 
@@ -1519,8 +1586,12 @@ if __name__ == "__main__":
                 lyap["n_realizations"]))
             f.write("  RMS separation from nominal: {:.6e} -> {:.6e} AU (factor {:.2f})\n".format(
                 lyap["separation_start_au"], lyap["separation_end_au"], lyap["growth_factor"]))
-            f.write("  Fit quality: R2(exponential) = {:.4f}, R2(linear) = {:.4f}\n".format(
-                lyap["r2_exponential"], lyap["r2_linear"]))
+            f.write("  Fit quality: R2(exponential) = {:.4f}, R2(linear) = {:.4f} "
+                    "({:d} samples)\n".format(
+                        lyap["r2_exponential"], lyap["r2_linear"], lyap["n_samples_used"]))
+            if lyap["n_truncated"]:
+                f.write("  {:d} realization(s) ended early (e.g. impacted) and contributed only "
+                        "over their own span.\n".format(lyap["n_truncated"]))
             if lyap["growth"] == "exponential":
                 f.write("  Growth is exponential: lambda = {:.6f} /day, "
                         "Lyapunov time = {:.2f} days.\n".format(
@@ -1529,8 +1600,17 @@ if __name__ == "__main__":
             elif lyap["growth"] == "linear":
                 f.write("  Growth is linear, i.e. the motion is regular over this interval and no\n")
                 f.write("  exponential divergence (and hence no Lyapunov time) can be derived.\n")
+            elif lyap["growth"] == "saturated":
+                f.write("  The ensemble has spread to {:.1f}% of its mean heliocentric distance "
+                        "({:.3f} AU),\n".format(
+                            100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"],
+                            lyap["heliocentric_distance_au"]))
+                f.write("  so it is no longer a compact cloud, the linearised picture behind a\n")
+                f.write("  Lyapunov exponent has broken down, and no exponent is claimed. Use a\n")
+                f.write("  shorter integration to estimate one.\n")
             else:
-                f.write("  Growth fits neither a clean exponential nor a linear law.\n")
+                f.write("  Growth fits neither a clean exponential nor a linear law, so no\n")
+                f.write("  divergence timescale is claimed.\n")
             f.write("  Note: this is a finite-time estimate from the measurement-uncertainty\n")
             f.write("  ensemble, not a renormalised variational Lyapunov exponent.\n")
 
@@ -1683,6 +1763,11 @@ if __name__ == "__main__":
     # Plot the MC realizations (all in thin alpha=0.5 lines)
     for mc_name in sim_outputs_mc:
 
+        # Each realization gets its own time axis: a realization truncated early (for example by an
+        # impact) is shorter than the nominal solution, and plotting it against the nominal time
+        # axis would raise a dimension-mismatch error.
+        t_mc = [x[0]/(2*np.pi)*365.25 for x in sim_outputs_mc[mc_name]]
+
         a_mc = [x[2].a*dist_unit_multiplier for x in sim_outputs_mc[mc_name]]
         e_mc = [x[2].e for x in sim_outputs_mc[mc_name]]
         incl_mc = [x[2].inc for x in sim_outputs_mc[mc_name]]
@@ -1691,13 +1776,13 @@ if __name__ == "__main__":
         f_mc = [x[2].f for x in sim_outputs_mc[mc_name]]
         earth_dist = [x[3]["Earth"] for x in sim_outputs_mc[mc_name]]
 
-        axs[0, 0].plot(t, a_mc, alpha=0.5, color='k', lw=0.5)
-        axs[0, 1].plot(t, e_mc, alpha=0.5, color='k', lw=0.5)
-        axs[1, 0].plot(t, np.degrees(incl_mc), alpha=0.5, color='k', lw=0.5)
-        axs[1, 1].plot(t, np.degrees(Omega_mc), alpha=0.5, color='k', lw=0.5)
-        axs[2, 0].plot(t, np.degrees(omega_mc), alpha=0.5, color='k', lw=0.5)
-        axs[2, 1].plot(t, np.degrees(f_mc), alpha=0.5, color='k', lw=0.5)
-        axs[0, 2].plot(t, np.array(earth_dist)*dist_unit_multiplier, alpha=0.5, color='k', lw=0.5)
+        axs[0, 0].plot(t_mc, a_mc, alpha=0.5, color='k', lw=0.5)
+        axs[0, 1].plot(t_mc, e_mc, alpha=0.5, color='k', lw=0.5)
+        axs[1, 0].plot(t_mc, np.degrees(incl_mc), alpha=0.5, color='k', lw=0.5)
+        axs[1, 1].plot(t_mc, np.degrees(Omega_mc), alpha=0.5, color='k', lw=0.5)
+        axs[2, 0].plot(t_mc, np.degrees(omega_mc), alpha=0.5, color='k', lw=0.5)
+        axs[2, 1].plot(t_mc, np.degrees(f_mc), alpha=0.5, color='k', lw=0.5)
+        axs[0, 2].plot(t_mc, np.array(earth_dist)*dist_unit_multiplier, alpha=0.5, color='k', lw=0.5)
 
     
     
