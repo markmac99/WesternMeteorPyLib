@@ -464,13 +464,43 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
     t_days = np.array([abs(sim_outputs[i][0] - sim_outputs[0][0])/(2*np.pi)*365.25
                        for i in range(last)])
 
+    # Heliocentric distance of the nominal solution at each sample
+    helio_r = np.linalg.norm(nominal_pos[:last], axis=1)
+    helio_dist = float(np.mean(helio_r))
+
+    # A Lyapunov exponent only means anything while the ensemble is still a compact cloud around the
+    # nominal solution. Rather than rejecting a long integration outright, the fit is restricted to
+    # the leading window in which the cloud is still compact - the information is already in the run,
+    # so there is no need to repeat it with a shorter span. The separation grows monotonically in
+    # practice, so the window ends at the first sample that exceeds the compactness limit.
+    compact = delta <= saturation_fraction*np.where(helio_r > 0, helio_r, np.inf)
+    if not compact.any():
+        i_sat = 0
+    elif compact.all():
+        i_sat = last
+    else:
+        i_sat = int(np.argmax(~compact))
+
+    # Whether the fit had to stop short of the end of the integration
+    truncated_at_saturation = bool(i_sat < last)
+
+    # Fit over the compact window (always keeping at least the first samples for reporting)
+    n_win = max(i_sat, 0)
+    if n_win >= 4:
+        t_win = t_days[:n_win]
+        d_win = delta[:n_win]
+    else:
+        # The ensemble was never compact for long enough to fit anything
+        t_win = t_days
+        d_win = delta
+
     # Drop the first sample (t = 0) and any non-positive separations before taking the logarithm
-    mask = (t_days > 0) & (delta > 0)
+    mask = (t_win > 0) & (d_win > 0)
     if np.count_nonzero(mask) < 3:
         return None
 
-    t_fit = t_days[mask]
-    d_fit = delta[mask]
+    t_fit = t_win[mask]
+    d_fit = d_win[mask]
 
     # Exponential growth: ln(delta) linear in t -> slope is the Lyapunov exponent
     fit_exp = scipy.stats.linregress(t_fit, np.log(d_fit))
@@ -481,12 +511,11 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
     r2_exp = fit_exp.rvalue**2
     r2_lin = fit_lin.rvalue**2
 
-    # Has the ensemble spread to a significant fraction of its own heliocentric distance?
-    helio_dist = float(np.mean(np.linalg.norm(nominal_pos[:last], axis=1)))
-    saturated = bool(delta[-1] > saturation_fraction*helio_dist) if helio_dist > 0 else False
+    # Saturated means there was not even a usable compact window to fit
+    saturated = bool(n_win < 4)
 
     # Only call it exponential if the ln-linear fit is genuinely good, clearly beats the linear
-    # alternative, has a positive rate, and the ensemble has not saturated
+    # alternative, and has a positive rate
     growth = "undetermined"
     lyap_time = None
     lam = None
@@ -499,21 +528,116 @@ def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
     elif r2_lin >= r2_min:
         growth = "linear"
 
+    # Divergence of the semi-major axis, which is the more meaningful chaos indicator. The position
+    # separation above saturates within a few orbits purely from Keplerian phase drift (slightly
+    # different semi-major axes give slightly different periods, so the cloud smears along the
+    # track), whether or not the motion is chaotic. Differences in the orbital elements are immune to
+    # that: for regular motion the spread in a stays essentially constant at its initial value, while
+    # chaotic motion makes it grow, typically in jumps at close encounters.
+    a_nom = np.array([row[2].a for row in sim_outputs[:last]])
+    a_sq = np.zeros(last)
+    a_counts = np.zeros(last, dtype=int)
+    for mc_name in sim_outputs_mc:
+        mc_rows = sim_outputs_mc[mc_name]
+        n_common = min(last, len(mc_rows))
+        if n_common < 2:
+            continue
+        a_mc = np.array([mc_rows[i][2].a for i in range(n_common)])
+        a_sq[:n_common] += (a_mc - a_nom[:n_common])**2
+        a_counts[:n_common] += 1
+
+    element_divergence = None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        a_valid = a_counts >= 2
+        if np.count_nonzero(a_valid) >= 4:
+
+            sigma_a = np.sqrt(a_sq[:last][a_valid]/a_counts[:last][a_valid])
+            t_a = t_days[a_valid]
+
+            a_mask = (t_a > 0) & (sigma_a > 0)
+            if np.count_nonzero(a_mask) >= 3:
+
+                t_af = t_a[a_mask]
+                s_af = sigma_a[a_mask]
+
+                fit_a_exp = scipy.stats.linregress(t_af, np.log(s_af))
+                fit_a_lin = scipy.stats.linregress(t_af, s_af)
+                r2_a_exp = fit_a_exp.rvalue**2
+                r2_a_lin = fit_a_lin.rvalue**2
+
+                a_growth = "undetermined"
+                a_lyap = None
+                a_lam = None
+                if (fit_a_exp.slope > 0) and (r2_a_exp >= r2_min) and (r2_a_exp >= r2_a_lin + r2_margin):
+                    a_growth = "exponential"
+                    a_lam = fit_a_exp.slope
+                    a_lyap = 1.0/a_lam
+                elif s_af[-1]/s_af[0] < 2.0:
+                    # The spread in a barely changed, so the motion is regular in this window
+                    a_growth = "regular"
+                elif r2_a_lin >= r2_min:
+                    a_growth = "linear"
+
+                element_divergence = {
+                    "growth": a_growth,
+                    "lyapunov_time_days": a_lyap,
+                    "lambda_per_day": a_lam,
+                    "r2_exponential": r2_a_exp,
+                    "r2_linear": r2_a_lin,
+                    "sigma_a_start_au": float(s_af[0]),
+                    "sigma_a_end_au": float(s_af[-1]),
+                    "sigma_a_growth_factor": float(s_af[-1]/s_af[0]),
+                    "span_days": float(t_af[-1]),
+                }
+
     return {
         "n_realizations": len(sim_outputs_mc),
         "n_truncated": n_truncated,
         "n_samples_used": int(np.count_nonzero(mask)),
         "growth": growth,
         "saturated": saturated,
+        "truncated_at_saturation": truncated_at_saturation,
+        "fit_window_days": float(t_fit[-1]),
+        "total_span_days": float(t_days[-1]),
         "lyapunov_time_days": lyap_time,
         "lambda_per_day": lam,
         "r2_exponential": r2_exp,
         "r2_linear": r2_lin,
         "separation_start_au": float(d_fit[0]),
         "separation_end_au": float(delta[-1]),
+        "separation_fit_end_au": float(d_fit[-1]),
         "growth_factor": float(delta[-1]/d_fit[0]),
         "heliocentric_distance_au": helio_dist,
+        "element_divergence": element_divergence,
     }
+
+
+def radiationPressureBeta(radius_m, density_kgm3, q_pr=1.0):
+    """ Compute beta, the ratio of the solar radiation pressure force to solar gravity, for a
+    spherical grain.
+
+        beta = 3*L_sun*Q_pr/(16*pi*G*M_sun*c*rho*s) = 5.7425e-4*Q_pr/(rho*s)
+
+    with rho in kg/m^3 and s in m. As a sanity check, a 1 micron grain of density 3000 kg/m^3 gives
+    beta = 0.19, while a 1 cm meteoroid of the same density gives 1.9e-5, i.e. radiation pressure is
+    negligible for fireball-producing bodies but important for small grains.
+
+    Arguments:
+        radius_m: [float] Grain radius in metres.
+        density_kgm3: [float] Bulk density in kg/m^3.
+
+    Keyword arguments:
+        q_pr: [float] Radiation-pressure efficiency factor, ~1 for grains large compared to the
+            wavelength of sunlight. Default 1.0.
+
+    Return:
+        [float] The dimensionless beta parameter.
+    """
+
+    if (radius_m <= 0) or (density_kgm3 <= 0):
+        raise ValueError("The radius and the density must both be positive.")
+
+    return 5.7425e-4*q_pr/(density_kgm3*radius_m)
 
 
 def tisserandParameterJupiter(a, e, inc):
@@ -886,6 +1010,18 @@ def _integrateParticles(task):
     rebx.add_force(gr)
     gr.params["c"] = rbxConstants.C
 
+    # Optional solar radiation pressure and Poynting-Robertson drag on the integrated particles.
+    # Off unless a beta is supplied, because it needs the object's size and density, which are not
+    # part of a trajectory solution. REBOUNDx's radiation_forces includes both effects.
+    beta = task.get("beta")
+    if beta:
+        rad = rebx.load_force("radiation_forces")
+        rebx.add_force(rad)
+        rad.params["c"] = rbxConstants.C
+        ps["Sun"].params["radiation_source"] = 1
+        for name in particle_names:
+            ps[name].params["beta"] = beta
+
     # Move to the center of momentum frame before integrating
     sim.move_to_com()
 
@@ -1079,7 +1215,7 @@ def reboundSimulate(
         julian_date, state_vect, traj=None,
         direction="forward", sim_days=60, n_outputs=500, obj_name="obj", obj_mass=0.0, mc_runs=100,
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
-        show_progress=True, return_diagnostics=False, random_seed=None, verbose=False):
+        show_progress=True, return_diagnostics=False, random_seed=None, beta=None, verbose=False):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -1115,6 +1251,11 @@ def reboundSimulate(
         random_seed: [int] Seed for the Monte Carlo state-vector sampling. Pass a value to make a
             run exactly reproducible; None (default) draws a fresh, unpredictable seed. The sampling
             is done in the parent process, so results do not depend on the number of cores used.
+        beta: [float] Ratio of solar radiation pressure to solar gravity for the integrated object.
+            If given, radiation pressure and Poynting-Robertson drag are applied to the object (see
+            radiationPressureBeta to compute it from a size and density). None (default) leaves the
+            integration purely gravitational, since a trajectory solution does not constrain the
+            object's size and density.
         verbose: [bool] If True, print out the progress of the simulation.
 
     Return:
@@ -1265,6 +1406,7 @@ def reboundSimulate(
             "times": list(times),
             "direction": direction,
             "reference_frame": reference_frame,
+            "beta": beta,
         }
 
     if verbose:
@@ -1398,6 +1540,24 @@ if __name__ == "__main__":
                         help="Random seed for the Monte Carlo sampling, making a run exactly "
                         "reproducible. If not given, a seed is drawn and reported.")
 
+    parser.add_argument("--outputs", type=int, default=500,
+                        help="Number of times along the integration at which the state is saved. "
+                        "Increase it for long integrations, where the default 500 samples are "
+                        "coarse. Default: 500.")
+
+    parser.add_argument("--beta", type=float, default=None,
+                        help="Include solar radiation pressure and Poynting-Robertson drag with this "
+                        "beta (the ratio of radiation pressure to solar gravity). Mutually exclusive "
+                        "with --radius/--density, which compute beta instead.")
+
+    parser.add_argument("--radius", type=float, default=None,
+                        help="Object radius in metres, used with --density to compute beta and "
+                        "include radiation forces. Purely gravitational if not given.")
+
+    parser.add_argument("--density", type=float, default=3000.0,
+                        help="Object bulk density in kg/m^3, used with --radius to compute beta. "
+                        "Default: 3000.")
+
     parser.add_argument("--verbose", action="store_true", help="Print out the progress of the simulation.")
 
     args = parser.parse_args()
@@ -1414,6 +1574,19 @@ if __name__ == "__main__":
     # Seed for the Monte Carlo sampling. If none was given, draw one and report it, so that any run
     # can be reproduced afterwards with --seed.
     random_seed = args.seed if args.seed is not None else int(np.random.SeedSequence().entropy % (2**32))
+
+    ### Non-gravitational forces (off by default) ###
+    if (args.beta is not None) and (args.radius is not None):
+        parser.error("Give either --beta or --radius (with --density), not both.")
+
+    beta = args.beta
+    if args.radius is not None:
+        beta = radiationPressureBeta(args.radius, args.density)
+        print("Radiation forces ON: radius {:.4g} m, density {:.0f} kg/m^3 -> beta = {:.4e}".format(
+            args.radius, args.density, beta))
+    elif beta is not None:
+        print("Radiation forces ON: beta = {:.4e}".format(beta))
+    ### ###
 
     # Source of the planetary ephemeris
     ephem_source = "horizons" if args.horizons else "local"
@@ -1460,9 +1633,10 @@ if __name__ == "__main__":
     t_run_start = time.time()
     sim_outputs, sim_outputs_mc, sim_diagnostics = reboundSimulate(
         None, None, traj=traj, direction=direction, sim_days=sim_days,
-        obj_name=traj.traj_id, mc_runs=args.mc, reference_frame=reference_frame,
+        obj_name=traj.traj_id, mc_runs=args.mc, n_outputs=args.outputs,
+        reference_frame=reference_frame,
         ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True,
-        random_seed=random_seed, verbose=args.verbose
+        random_seed=random_seed, beta=beta, verbose=args.verbose
         )
     sim_wall = time.time() - t_run_start
 
@@ -1588,6 +1762,9 @@ if __name__ == "__main__":
         print("  Integration  : {:.2f} days {:s}".format(achieved_days, direction))
 
     print("  Frame        : {:s}".format(reference_frame))
+    print("  Forces       : {:s}".format(
+        "gravity + GR + Earth J2/J4" if beta is None
+        else "gravity + GR + Earth J2/J4 + radiation (beta = {:.3e})".format(beta)))
     print("  Start epoch  : {:.6f} JD (TDB)".format(traj.jdt_ref))
     print("  Final epoch  : {:.6f} JD (TDB)  =  {:s} UTC".format(final_epoch_jd, time_utc.iso))
     if len(sim_outputs_mc):
@@ -1654,6 +1831,11 @@ if __name__ == "__main__":
         if lyap["n_truncated"]:
             print("    {:d} realization(s) ended early and contributed only over their own span.".format(
                 lyap["n_truncated"]))
+        if lyap["truncated_at_saturation"] and not lyap["saturated"]:
+            print("    Fitted over the first {:.0f} d of {:.0f} d, while the ensemble was still "
+                  "compact".format(lyap["fit_window_days"], lyap["total_span_days"]))
+            print("    (separation {:.3e} AU at the end of that window, {:d} samples).".format(
+                lyap["separation_fit_end_au"], lyap["n_samples_used"]))
         if lyap["growth"] == "exponential":
             print("    Growth is exponential: Lyapunov time ~ {:.1f} d  "
                   "(lambda = {:.4f} /d, R2 = {:.3f})".format(
@@ -1664,15 +1846,36 @@ if __name__ == "__main__":
                   "detected".format(lyap["r2_linear"]))
             print("    over this interval, so no Lyapunov time can be derived from it.")
         elif lyap["growth"] == "saturated":
-            print("    The ensemble has spread to {:.1f}% of its heliocentric distance, so it is no "
-                  "longer a".format(100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"]))
-            print("    compact cloud and no Lyapunov exponent is derived. Shorten the integration "
-                  "to estimate one.")
+            print("    The ensemble was already spread over {:.1f}% of its heliocentric distance "
+                  "within the".format(100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"]))
+            print("    first few samples, leaving no compact window to fit. Use a denser output "
+                  "sampling (--outputs)")
+            print("    or a shorter integration to resolve the early divergence.")
         else:
             print("    Growth fits neither a clean exponential nor a linear law "
                   "(R2_exp = {:.3f}, R2_lin = {:.3f}),".format(
                       lyap["r2_exponential"], lyap["r2_linear"]))
             print("    so no divergence timescale is claimed.")
+
+        # Semi-major-axis spread: the chaos indicator that is not corrupted by phase drift
+        ed = lyap.get("element_divergence")
+        if ed is not None:
+            print("    Spread in a over {:.0f} d: {:.3e} -> {:.3e} AU (x{:.2f})".format(
+                ed["span_days"], ed["sigma_a_start_au"], ed["sigma_a_end_au"],
+                ed["sigma_a_growth_factor"]))
+            if ed["growth"] == "exponential":
+                print("    The spread in a grows exponentially: Lyapunov time ~ {:.1f} d "
+                      "(R2 = {:.3f}).".format(ed["lyapunov_time_days"], ed["r2_exponential"]))
+                print("    This is the chaos estimate to trust; unlike the position separation it is")
+                print("    not corrupted by Keplerian phase drift.")
+            elif ed["growth"] == "regular":
+                print("    The spread in a is essentially unchanged, so the orbit is regular over "
+                      "this span:")
+                print("    the position divergence above is phase drift, not chaos.")
+            else:
+                print("    The spread in a grows but not exponentially "
+                      "(R2_exp = {:.3f}, R2_lin = {:.3f}).".format(
+                          ed["r2_exponential"], ed["r2_linear"]))
     print(hdr)
 
 
@@ -1768,6 +1971,11 @@ if __name__ == "__main__":
             if lyap["n_truncated"]:
                 f.write("  {:d} realization(s) ended early (e.g. impacted) and contributed only "
                         "over their own span.\n".format(lyap["n_truncated"]))
+            if lyap["truncated_at_saturation"] and not lyap["saturated"]:
+                f.write("  Fitted over the first {:.1f} d of {:.1f} d, i.e. the leading window in "
+                        "which the\n".format(lyap["fit_window_days"], lyap["total_span_days"]))
+                f.write("  ensemble was still a compact cloud (separation {:.6e} AU at the end of "
+                        "that window).\n".format(lyap["separation_fit_end_au"]))
             if lyap["growth"] == "exponential":
                 f.write("  Growth is exponential: lambda = {:.6f} /day, "
                         "Lyapunov time = {:.2f} days.\n".format(
@@ -1777,18 +1985,39 @@ if __name__ == "__main__":
                 f.write("  Growth is linear, i.e. the motion is regular over this interval and no\n")
                 f.write("  exponential divergence (and hence no Lyapunov time) can be derived.\n")
             elif lyap["growth"] == "saturated":
-                f.write("  The ensemble has spread to {:.1f}% of its mean heliocentric distance "
-                        "({:.3f} AU),\n".format(
-                            100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"],
-                            lyap["heliocentric_distance_au"]))
-                f.write("  so it is no longer a compact cloud, the linearised picture behind a\n")
-                f.write("  Lyapunov exponent has broken down, and no exponent is claimed. Use a\n")
-                f.write("  shorter integration to estimate one.\n")
+                f.write("  The ensemble was already spread over {:.1f}% of its mean heliocentric\n".format(
+                    100*lyap["separation_end_au"]/lyap["heliocentric_distance_au"]))
+                f.write("  distance ({:.3f} AU) within the first few samples, so there was no "
+                        "compact\n".format(lyap["heliocentric_distance_au"]))
+                f.write("  window to fit and no exponent is claimed. Use a denser output sampling\n")
+                f.write("  (--outputs) or a shorter integration to resolve the early divergence.\n")
             else:
                 f.write("  Growth fits neither a clean exponential nor a linear law, so no\n")
                 f.write("  divergence timescale is claimed.\n")
             f.write("  Note: this is a finite-time estimate from the measurement-uncertainty\n")
             f.write("  ensemble, not a renormalised variational Lyapunov exponent.\n")
+
+            # Semi-major-axis spread, which is not corrupted by Keplerian phase drift
+            ed = lyap.get("element_divergence")
+            if ed is not None:
+                f.write("\n  Spread in the semi-major axis over {:.1f} d: {:.6e} -> {:.6e} AU "
+                        "(factor {:.3f})\n".format(
+                            ed["span_days"], ed["sigma_a_start_au"], ed["sigma_a_end_au"],
+                            ed["sigma_a_growth_factor"]))
+                f.write("  Fit quality: R2(exponential) = {:.4f}, R2(linear) = {:.4f}\n".format(
+                    ed["r2_exponential"], ed["r2_linear"]))
+                if ed["growth"] == "exponential":
+                    f.write("  The spread in a grows exponentially: lambda = {:.6e} /day, "
+                            "Lyapunov time = {:.2f} days.\n".format(
+                                ed["lambda_per_day"], ed["lyapunov_time_days"]))
+                    f.write("  This is the chaos estimate to prefer: unlike the position\n")
+                    f.write("  separation it is not corrupted by Keplerian phase drift, which\n")
+                    f.write("  smears the cloud along the orbit whether or not the motion is chaotic.\n")
+                elif ed["growth"] == "regular":
+                    f.write("  The spread in a is essentially unchanged, so the orbit is regular\n")
+                    f.write("  over this span and the position divergence above is phase drift.\n")
+                else:
+                    f.write("  The spread in a grows, but not as a clean exponential.\n")
 
         # Save the nominal orbital elements and per-body distances from the initial to end time
         # of the simulation. Distances to each body are always in AU.
