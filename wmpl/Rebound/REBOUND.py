@@ -312,6 +312,152 @@ def detectCloseEncounters(sim_outputs, n_hill=3.0):
     return encounters
 
 
+def encountersFromMinDistances(min_dist_au, min_time_days, n_hill=3.0):
+    """ Build the close-encounter list from exact closest-approach distances measured during the
+    integration (see the heartbeat tracking in _integrateParticles).
+
+    This is the preferred alternative to detectCloseEncounters, which scans the sampled output and
+    is therefore sampling-limited: near the Earth the object can move a large fraction of the Moon's
+    detection sphere between two output samples, so a lunar encounter can be missed entirely or its
+    minimum distance badly overestimated. The values used here are recorded at every internal
+    integrator timestep instead.
+
+    Arguments:
+        min_dist_au: [dict] {body: closest approach in AU, or None if the body was not tracked}.
+        min_time_days: [dict] {body: time of closest approach in days}.
+
+    Keyword arguments:
+        n_hill: [float] Multiple of the Hill radius used as the close-encounter threshold.
+            Default is 3.0.
+
+    Return:
+        [list] Encounter dicts in the same format as detectCloseEncounters, sorted by closeness
+            (min_dist/R_Hill ascending).
+    """
+
+    encounters = []
+
+    for body, hill_radius in HILL_RADII_AU.items():
+
+        dist = min_dist_au.get(body)
+        if dist is None:
+            continue
+
+        if dist < n_hill*hill_radius:
+            encounters.append({
+                "body": body,
+                "min_dist_au": dist,
+                "time_days": min_time_days.get(body),
+                "hill_radius_au": hill_radius,
+                "n_hill": dist/hill_radius,
+                "index": None,
+            })
+
+    encounters.sort(key=lambda e: e["n_hill"])
+
+    return encounters
+
+
+def estimateLyapunovFromMC(sim_outputs, sim_outputs_mc):
+    """ Estimate the trajectory divergence timescale from the Monte Carlo ensemble.
+
+    The Monte Carlo realizations are trajectories started from slightly different state vectors
+    drawn from the measurement covariance, so their separation from the nominal solution over time
+    measures exactly the divergence a Lyapunov analysis looks for - no extra variational particles
+    are needed, and this costs nothing beyond an MC run that has already been done.
+
+    The root-mean-square separation delta(t) of the realizations from the nominal solution is fitted
+    both as exponential growth (ln delta linear in t, the chaotic case, giving a Lyapunov exponent
+    and time) and as linear growth (the regular/non-chaotic case). Whichever describes the data
+    better is reported.
+
+    Note that this is a finite-time estimate driven by the actual measurement uncertainty, not a
+    renormalised variational Lyapunov exponent: the separations are finite rather than
+    infinitesimal, so the result is only meaningful while the ensemble stays compact.
+
+    Arguments:
+        sim_outputs: [list] Nominal per-timestep outputs from reboundSimulate.
+        sim_outputs_mc: [dict] {mc_name: per-timestep outputs} from reboundSimulate.
+
+    Return:
+        [dict or None] None if there are too few realizations or time samples, otherwise:
+            {
+                "n_realizations":      [int],
+                "growth":              [str] "exponential", "linear" or "undetermined",
+                "lyapunov_time_days":  [float or None] 1/lambda if the growth is exponential,
+                "lambda_per_day":      [float or None] fitted exponential growth rate,
+                "r2_exponential":      [float] coefficient of determination of the ln-linear fit,
+                "r2_linear":           [float] coefficient of determination of the linear fit,
+                "separation_start_au": [float] initial RMS separation,
+                "separation_end_au":   [float] final RMS separation,
+                "growth_factor":       [float] end/start separation ratio,
+            }
+    """
+
+    if (not sim_outputs) or (len(sim_outputs_mc) < 2):
+        return None
+
+    # Use the time span covered by every realization (a realization can end early if it impacted)
+    n_samples = min([len(sim_outputs)] + [len(v) for v in sim_outputs_mc.values()])
+    if n_samples < 4:
+        return None
+
+    # Elapsed time in days (positive for both integration directions)
+    t_days = np.array([abs(sim_outputs[i][0] - sim_outputs[0][0])/(2*np.pi)*365.25
+                       for i in range(n_samples)])
+
+    # Nominal heliocentric positions (AU)
+    nominal_pos = np.array([sim_outputs[i][1][:3] for i in range(n_samples)])
+
+    # RMS separation of the realizations from the nominal solution at each time
+    sq_sum = np.zeros(n_samples)
+    for mc_name in sim_outputs_mc:
+        mc_pos = np.array([sim_outputs_mc[mc_name][i][1][:3] for i in range(n_samples)])
+        sq_sum += np.sum((mc_pos - nominal_pos)**2, axis=1)
+
+    delta = np.sqrt(sq_sum/len(sim_outputs_mc))
+
+    # Drop the first sample (t = 0) and any non-positive separations before taking the logarithm
+    mask = (t_days > 0) & (delta > 0)
+    if np.count_nonzero(mask) < 3:
+        return None
+
+    t_fit = t_days[mask]
+    d_fit = delta[mask]
+
+    # Exponential growth: ln(delta) linear in t -> slope is the Lyapunov exponent
+    fit_exp = scipy.stats.linregress(t_fit, np.log(d_fit))
+
+    # Linear growth: the regular, non-chaotic case
+    fit_lin = scipy.stats.linregress(t_fit, d_fit)
+
+    r2_exp = fit_exp.rvalue**2
+    r2_lin = fit_lin.rvalue**2
+
+    # Only call it exponential if the ln-linear fit is genuinely better and the rate is positive
+    growth = "undetermined"
+    lyap_time = None
+    lam = None
+    if (fit_exp.slope > 0) and (r2_exp > r2_lin + 0.01) and (r2_exp > 0.5):
+        growth = "exponential"
+        lam = fit_exp.slope
+        lyap_time = 1.0/lam
+    elif r2_lin > 0.5:
+        growth = "linear"
+
+    return {
+        "n_realizations": len(sim_outputs_mc),
+        "growth": growth,
+        "lyapunov_time_days": lyap_time,
+        "lambda_per_day": lam,
+        "r2_exponential": r2_exp,
+        "r2_linear": r2_lin,
+        "separation_start_au": float(delta[mask][0]),
+        "separation_end_au": float(delta[-1]),
+        "growth_factor": float(delta[-1]/delta[mask][0]) if delta[mask][0] > 0 else None,
+    }
+
+
 def convertToBarycentric(state_vect, jd, log_file_path="", ephem_source="local", jpl_ephem_data=None,
                          earth_state=None):
     """ Takes a state vector in ECI coordinates (m and m/s), Julian date and converts from ECI (geocentric) to
@@ -540,10 +686,24 @@ def _integrateParticles(task):
             times:           [list] Output times (REBOUND time units) to integrate to.
             direction:       [str]  "forward" or "backward" (sets the timestep sign).
             reference_frame: [str]  "heliocentric" or "geocentric" (passed to extractSimParams).
+            n_hill:          [float] Optional. Multiple of the Earth's Hill radius the object must
+                                 exceed before encounter/impact detection is armed. Default 3.0.
+            body_radii:      [dict] Optional. {body: radius in AU} overriding the default physical
+                                 radii used for impact detection (Earth 6371 km, Moon 1737.4 km).
 
     Return:
-        [dict] {particle_name: [[time, state_vect_hel, orb_ns, planet_dists], ...]}, where orb_ns
-            is a picklable SimpleNamespace with attributes a, e, inc, Omega, omega, f.
+        [dict] {
+            "outputs": {particle_name: [[time, state_vect_hel, orb_ns, planet_dists], ...]}, where
+                orb_ns is a picklable SimpleNamespace with attributes a, e, inc, Omega, omega, f,
+            "diagnostics": {particle_name: {
+                "min_dist_au":   {body: closest approach in AU (None if never tracked)},
+                "min_time_days": {body: time of closest approach in days},
+                "departed":      [bool] whether the object left the Earth's neighbourhood,
+                "impact":        None, or {"body", "time_days", "dist_au"} if the object hit a body,
+            }},
+        }
+        The closest approaches are measured at every internal integrator timestep (via a heartbeat
+        callback), not at the output samples, so they are exact rather than sampling-limited.
     """
 
     planet_names = task["planet_names"]
@@ -555,6 +715,8 @@ def _integrateParticles(task):
     direction = task["direction"]
     reference_frame = task["reference_frame"]
 
+    n_hill = task.get("n_hill", 3.0)
+
     aum = rb.units.lengths_SI["au"]  # 1 au in m
     aukm = aum/1e3  # au in km
 
@@ -562,7 +724,18 @@ def _integrateParticles(task):
     RE_eq = 6378.135/aukm
     J2 = 1.0826157e-3
     J4 = -1.620e-6
-    dmin = 4.326e-5  # Earth radius in au
+
+    # Physical body radii used for impact (collision) detection, in AU. The task can override them,
+    # e.g. to use an atmospheric-entry cross-section instead of the solid-body radius.
+    body_radii = {"Earth": 6371.0/aukm, "Luna": 1737.4/aukm}
+    body_radii.update(task.get("body_radii", {}))
+
+    # The object starts at the Earth, so encounter and impact detection for every body except the
+    # Moon is only armed once the object has left the Earth's neighbourhood (see the module notes
+    # on findEarthDepartureIndex). A lunar encounter can only ever happen while the object is deep
+    # inside this radius (the Moon's apogee plus a few of its Hill radii is ~0.004 AU, far below
+    # it), so the Moon is tracked over the whole integration.
+    departure_radius = n_hill*HILL_RADII_AU["Earth"]
 
     # Set up the simulation
     sim = rb.Simulation()
@@ -594,8 +767,10 @@ def _integrateParticles(task):
     ps["Earth"].params["J2"] = J2
     ps["Earth"].params["J4"] = J4
     ps["Earth"].params["R_eq"] = RE_eq
-    ps["Earth"].r = dmin  # set size of Earth
-    ps["Luna"].r = dmin/4  # set size of Moon
+    # Assign the body radii used for impact detection
+    for bname, brad in body_radii.items():
+        if bname in planet_names:
+            ps[bname].r = brad
 
     # gr_full is the general relativity correction for all bodies
     gr = rebx.load_force("gr_full")
@@ -605,19 +780,119 @@ def _integrateParticles(task):
     # Move to the center of momentum frame before integrating
     sim.move_to_com()
 
-    # Disable collision detection and the influence of the massless particles on the planets
+    # Collision detection starts disabled (the object starts at the Earth's surface, which would
+    # register as an immediate impact) and is armed once the object has departed. "line" mode checks
+    # for overlap along the line of travel between timesteps, which is required for fast movers.
     sim.collision = "none"
+    sim.collision_resolve = "halt"
     sim.N_active = len(planet_names)
     sim.testparticle_type = 0
+
+    # Indices of the bodies and the test particles in the simulation
+    n_planets = len(planet_names)
+    earth_i = planet_names.index("Earth")
+    particle_idx = {name: n_planets + k for k, name in enumerate(particle_names)}
+
+    # Per-particle closest-approach tracking, updated at every internal timestep by the heartbeat
+    # callback. This is what makes the encounter distances exact: the output samples are far too
+    # coarse near the Earth and the Moon (the object can cross the Moon's whole detection sphere
+    # between two samples), whereas the integrator shrinks its adaptive timestep during a close
+    # encounter, so the heartbeat is dense exactly where it matters.
+    track = {}
+    for name in particle_names:
+        track[name] = {
+            "min_dist": {b: np.inf for b in planet_names},
+            "min_time": {b: np.nan for b in planet_names},
+            "departed": False,
+            "impact": None,
+        }
+
+    def heartbeat(sim_pointer):
+
+        s = sim_pointer.contents
+        p = s.particles
+        t_now = s.t
+
+        for pname, pidx in particle_idx.items():
+
+            # Skip particles that are no longer in the simulation
+            if pidx >= s.N:
+                continue
+
+            o = p[pidx]
+            st = track[pname]
+
+            # Distance to the Earth, used to decide whether the object has left its neighbourhood
+            pe = p[earth_i]
+            d_earth = ((o.x - pe.x)**2 + (o.y - pe.y)**2 + (o.z - pe.z)**2)**0.5
+            if (not st["departed"]) and (d_earth > departure_radius):
+                st["departed"] = True
+
+            for bi, bname in enumerate(planet_names):
+
+                # The Moon is tracked over the whole integration; every other body only after the
+                # object has left the Earth's neighbourhood, so the trivial initial departure from
+                # the Earth is not reported as an encounter.
+                if (bname != "Luna") and (not st["departed"]):
+                    continue
+
+                b = p[bi]
+                d = ((o.x - b.x)**2 + (o.y - b.y)**2 + (o.z - b.z)**2)**0.5
+
+                if d < st["min_dist"][bname]:
+                    st["min_dist"][bname] = d
+                    st["min_time"][bname] = t_now
+
+    sim.heartbeat = heartbeat
 
     outputs = {name: [] for name in particle_names}
 
     # Integrate the simulation and save the state vectors and orbital elements. These are not time
     # steps, but the times at which the simulation state is saved.
-    for time in times:
+    for t_out in times:
 
         sim.move_to_com()
-        sim.integrate(time)
+
+        # Arm impact detection once every remaining particle has left the Earth's neighbourhood
+        if sim.collision == "none":
+            active = [n for n, i in particle_idx.items() if i < sim.N]
+            if active and all(track[n]["departed"] for n in active):
+                sim.collision = "line"
+
+        try:
+            sim.integrate(t_out)
+
+        except rb.Collision:
+
+            # Identify which body was hit (the test particles have no radius of their own)
+            t_impact = sim.t/(2*np.pi)*365.25
+            hit_particle = False
+            for pname, pidx in particle_idx.items():
+                if pidx >= sim.N:
+                    continue
+                o = sim.particles[pidx]
+                for bi, bname in enumerate(planet_names):
+                    b = sim.particles[bi]
+                    d = ((o.x - b.x)**2 + (o.y - b.y)**2 + (o.z - b.z)**2)**0.5
+                    if d <= (b.r + o.r):
+                        track[pname]["impact"] = {"body": bname, "time_days": t_impact,
+                                                  "dist_au": d}
+                        hit_particle = True
+
+            if hit_particle:
+                # The object hit a body, so the integration is physically over
+                break
+
+            # The collision did not involve any of the integrated particles, which means two massive
+            # bodies overlap (only possible with unphysically large body_radii). Disable collision
+            # detection and finish this step rather than silently truncating the integration.
+            warnings.warn(
+                "REBOUND reported a collision between two massive bodies at t = {:.4f} d; "
+                "impact detection disabled for the rest of this integration. Check body_radii.".format(
+                    t_impact), RuntimeWarning)
+            sim.collision = "none"
+            sim.integrate(t_out)
+
         sim.move_to_hel()
 
         for name in particle_names:
@@ -636,16 +911,30 @@ def _integrateParticles(task):
                 a=orb_elem.a, e=orb_elem.e, inc=orb_elem.inc,
                 Omega=orb_elem.Omega, omega=orb_elem.omega, f=orb_elem.f)
 
-            outputs[name].append([time, state_vect_hel, orb_ns, planet_dists])
+            outputs[name].append([t_out, state_vect_hel, orb_ns, planet_dists])
 
-    return outputs
+    # Assemble the picklable per-particle diagnostics (times converted to days)
+    diagnostics = {}
+    for name in particle_names:
+        st = track[name]
+        diagnostics[name] = {
+            "min_dist_au": {b: (None if not np.isfinite(st["min_dist"][b]) else st["min_dist"][b])
+                            for b in planet_names},
+            "min_time_days": {b: (None if not np.isfinite(st["min_time"][b])
+                                  else st["min_time"][b]/(2*np.pi)*365.25)
+                              for b in planet_names},
+            "departed": st["departed"],
+            "impact": st["impact"],
+        }
+
+    return {"outputs": outputs, "diagnostics": diagnostics}
 
 
 def reboundSimulate(
         julian_date, state_vect, traj=None,
         direction="forward", sim_days=60, n_outputs=500, obj_name="obj", obj_mass=0.0, mc_runs=100,
         reference_frame="heliocentric", ephem_source="local", n_cpu=None,
-        show_progress=True, verbose=False):
+        show_progress=True, return_diagnostics=False, verbose=False):
     """ Takes an state vector (or a Trajectory object), runs REBOUND and produces orbital elements for the 
     object at the end of the simulation or at the specified time.
 
@@ -674,11 +963,19 @@ def reboundSimulate(
         n_cpu: [int] Number of parallel processes used to integrate the Monte Carlo realizations.
             If None (default), uses max(1, os.cpu_count() - 1). Each realization is integrated in
             its own independent simulation, so its adaptive timestep does not affect the others.
+        show_progress: [bool] If True (default), report Monte Carlo integration progress.
+        return_diagnostics: [bool] If True, also return the per-particle diagnostics dictionary
+            (exact closest approaches and impacts measured during the integration). Default False,
+            which preserves the two-value return signature.
         verbose: [bool] If True, print out the progress of the simulation.
 
     Return:
         outputs: [list] List of outputs, each containing the time, state vector and orbital elements at that
             time.
+        outputs_mc: [dict] {mc_name: outputs} for the Monte Carlo realizations.
+        diagnostics: [dict] Only returned if return_diagnostics is True. Maps each particle name to
+            its exact closest approaches ("min_dist_au", "min_time_days"), whether it left the
+            Earth's neighbourhood ("departed"), and any impact ("impact"). See _integrateParticles.
 
     """
 
@@ -825,7 +1122,8 @@ def reboundSimulate(
 
     # Nominal solution, integrated in its own simulation (in the main process)
     nominal_result = _integrateParticles(_make_task([state_vect_rot], [obj_name]))
-    outputs = nominal_result[obj_name]
+    outputs = nominal_result["outputs"][obj_name]
+    diagnostics = dict(nominal_result["diagnostics"])
 
     # Monte Carlo realizations, each integrated in its own independent simulation, optionally across
     # multiple processes
@@ -893,7 +1191,11 @@ def reboundSimulate(
 
         for res in results:
             if res:
-                outputs_mc.update(res)
+                outputs_mc.update(res["outputs"])
+                diagnostics.update(res["diagnostics"])
+
+    if return_diagnostics:
+        return outputs, outputs_mc, diagnostics
 
     return outputs, outputs_mc
 
@@ -982,10 +1284,10 @@ if __name__ == "__main__":
     
     # Run the simulation for the given number of days from the epoch of the trajectory
     t_run_start = time.time()
-    sim_outputs, sim_outputs_mc = reboundSimulate(
+    sim_outputs, sim_outputs_mc, sim_diagnostics = reboundSimulate(
         None, None, traj=traj, direction=direction, sim_days=sim_days,
         obj_name=traj.traj_id, mc_runs=args.mc, reference_frame=reference_frame,
-        ephem_source=ephem_source, n_cpu=n_cpu, verbose=args.verbose
+        ephem_source=ephem_source, n_cpu=n_cpu, return_diagnostics=True, verbose=args.verbose
         )
     sim_wall = time.time() - t_run_start
 
@@ -1067,9 +1369,19 @@ if __name__ == "__main__":
 
     ###
 
-    # Detect close encounters (Hill-sphere criterion). Needed both for the summary and the report file.
+    # Detect close encounters (Hill-sphere criterion) from the exact closest approaches recorded at
+    # every internal integrator timestep, which resolves the fast Earth/Moon regime that the sampled
+    # output cannot. Needed both for the summary and the report file.
     n_hill = 3.0
-    encounters = detectCloseEncounters(sim_outputs, n_hill=n_hill)
+    nominal_diag = sim_diagnostics.get(traj.traj_id, {})
+    encounters = encountersFromMinDistances(
+        nominal_diag.get("min_dist_au", {}), nominal_diag.get("min_time_days", {}), n_hill=n_hill)
+
+    # Impact on a body, if any (detected with REBOUND's collision detection)
+    impact = nominal_diag.get("impact")
+
+    # Estimate the divergence/Lyapunov timescale from the Monte Carlo ensemble (free when MC is run)
+    lyap = estimateLyapunovFromMC(sim_outputs, sim_outputs_mc)
 
     # List of bodies for which the distance is tracked (planet_dists dict keys)
     dist_bodies = list(sim_outputs[0][3].keys())
@@ -1112,7 +1424,7 @@ if __name__ == "__main__":
     print("    f    = {:>13.6f}{:s}  deg".format(f_val, f_ci_str))
     print("-" * 78)
 
-    # Close-encounter summary
+    # Close-encounter summary (exact minima, measured every integrator timestep)
     if encounters:
         print("  Close encounters (< {:.0f} Hill radii):".format(n_hill))
         for enc in encounters:
@@ -1121,6 +1433,31 @@ if __name__ == "__main__":
                 enc["time_days"], enc["n_hill"], enc["hill_radius_au"]))
     else:
         print("  Close encounters (< {:.0f} Hill radii): none detected".format(n_hill))
+
+    # Impact, if the object hit a body
+    if impact:
+        print("  IMPACT: hit {:s} at t = {:+.4f} d".format(impact["body"], impact["time_days"]))
+
+    # Divergence / Lyapunov timescale estimated from the Monte Carlo spread
+    if lyap is not None:
+        print("-" * 78)
+        print("  Trajectory divergence (from {:d} Monte Carlo realizations):".format(
+            lyap["n_realizations"]))
+        print("    Separation from nominal: {:.3e} -> {:.3e} AU  (x{:.1f})".format(
+            lyap["separation_start_au"], lyap["separation_end_au"], lyap["growth_factor"]))
+        if lyap["growth"] == "exponential":
+            print("    Growth is exponential: Lyapunov time ~ {:.1f} d  "
+                  "(lambda = {:.4f} /d, R2 = {:.3f})".format(
+                      lyap["lyapunov_time_days"], lyap["lambda_per_day"], lyap["r2_exponential"]))
+            print("    The integration loses predictive value on timescales beyond this.")
+        elif lyap["growth"] == "linear":
+            print("    Growth is linear (regular motion, R2 = {:.3f}); no exponential divergence "
+                  "detected".format(lyap["r2_linear"]))
+            print("    over this interval, so no Lyapunov time can be derived from it.")
+        else:
+            print("    Growth fits neither a clean exponential nor a linear law "
+                  "(R2_exp = {:.3f}, R2_lin = {:.3f}).".format(
+                      lyap["r2_exponential"], lyap["r2_linear"]))
     print(hdr)
 
 
@@ -1140,7 +1477,8 @@ if __name__ == "__main__":
         f.write("node = {:>10.6f}{:s} deg\n".format(np.degrees(sim_outputs[-1][2].Omega), Omega_ci_str))
         f.write("f    = {:>10.6f}{:s} deg\n".format(np.degrees(sim_outputs[-1][2].f), f_ci_str))
 
-        # Save the detected close encounters (Hill-sphere criterion)
+        # Save the detected close encounters (Hill-sphere criterion). The distances are the exact
+        # minima recorded at every internal integrator timestep, not sampled from the output below.
         f.write("\nClose encounters (< {:.0f} Hill radii):\n".format(n_hill))
         if encounters:
             for enc in encounters:
@@ -1149,6 +1487,52 @@ if __name__ == "__main__":
                     enc["time_days"], enc["hill_radius_au"], enc["n_hill"]))
         else:
             f.write("  None detected.\n")
+
+        # Save the exact closest approach to every body, whether or not it counts as an encounter
+        f.write("\nClosest approach to each body over the integration "
+                "(exact, measured every integrator timestep):\n")
+        f.write("  Note: the object starts at the Earth, so for every body except the Moon these\n")
+        f.write("  minima are measured only after it left the Earth's neighbourhood ({:.0f} Earth\n".format(n_hill))
+        f.write("  Hill radii). The Earth value is therefore ~{:.0f} R_Hill unless the object\n".format(n_hill))
+        f.write("  genuinely returned. The Moon is tracked over the whole integration, because a\n")
+        f.write("  lunar encounter can only happen while the object is still close to the Earth.\n")
+        for body in dist_bodies:
+            d_min = nominal_diag.get("min_dist_au", {}).get(body)
+            t_min = nominal_diag.get("min_time_days", {}).get(body)
+            if d_min is None:
+                f.write("  {:<8s} not tracked (object never left the Earth's neighbourhood)\n".format(body))
+            else:
+                hill = HILL_RADII_AU.get(body)
+                hill_str = "" if hill is None else "  ({:.2f} R_Hill)".format(d_min/hill)
+                f.write("  {:<8s} {:12.6f} AU ({:14.1f} km) at t = {:10.4f} d{:s}\n".format(
+                    body, d_min, d_min*149597870.7, t_min, hill_str))
+
+        # Save any impact detected with REBOUND's collision detection
+        if impact:
+            f.write("\nIMPACT: the object hit {:s} at t = {:.4f} d "
+                    "(centre distance {:.8f} AU)\n".format(
+                        impact["body"], impact["time_days"], impact["dist_au"]))
+
+        # Save the divergence/Lyapunov estimate derived from the Monte Carlo ensemble
+        if lyap is not None:
+            f.write("\nTrajectory divergence (from {:d} Monte Carlo realizations):\n".format(
+                lyap["n_realizations"]))
+            f.write("  RMS separation from nominal: {:.6e} -> {:.6e} AU (factor {:.2f})\n".format(
+                lyap["separation_start_au"], lyap["separation_end_au"], lyap["growth_factor"]))
+            f.write("  Fit quality: R2(exponential) = {:.4f}, R2(linear) = {:.4f}\n".format(
+                lyap["r2_exponential"], lyap["r2_linear"]))
+            if lyap["growth"] == "exponential":
+                f.write("  Growth is exponential: lambda = {:.6f} /day, "
+                        "Lyapunov time = {:.2f} days.\n".format(
+                            lyap["lambda_per_day"], lyap["lyapunov_time_days"]))
+                f.write("  The integration loses predictive value beyond this timescale.\n")
+            elif lyap["growth"] == "linear":
+                f.write("  Growth is linear, i.e. the motion is regular over this interval and no\n")
+                f.write("  exponential divergence (and hence no Lyapunov time) can be derived.\n")
+            else:
+                f.write("  Growth fits neither a clean exponential nor a linear law.\n")
+            f.write("  Note: this is a finite-time estimate from the measurement-uncertainty\n")
+            f.write("  ensemble, not a renormalised variational Lyapunov exponent.\n")
 
         # Save the nominal orbital elements and per-body distances from the initial to end time
         # of the simulation. Distances to each body are always in AU.
