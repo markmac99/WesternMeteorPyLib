@@ -31,6 +31,7 @@ import argparse
 import datetime
 import json
 import numpy as np
+import copy
 
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 
@@ -57,6 +58,8 @@ class ObservationsDatabase():
         purge_records   : boolean, if true then delete any existing records
 
         """
+        self.db_path = db_path
+        self.db_name = db_name
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
@@ -69,7 +72,7 @@ class ObservationsDatabase():
         if res.fetchone() is None:
             if verbose:
                 log.info('create table paired_obs')
-            con.execute("CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)")
+            con.execute('CREATE TABLE paired_obs(obs_id VARCHAR(36) UNIQUE, obs_dt REAL, status INTEGER)')
         self._commitObsDatabase()
 
     def _commitObsDatabase(self):
@@ -107,7 +110,7 @@ class ObservationsDatabase():
         """
         
         paired = True
-        cur = self.dbhandle.execute(f"SELECT obs_id FROM paired_obs WHERE obs_id='{obs_id}' and status=1")
+        cur = self.dbhandle.execute('SELECT obs_id FROM paired_obs WHERE obs_id=? and status=1', (obs_id,))
         if cur.fetchone() is None:
             paired = False
         if verbose:
@@ -124,20 +127,22 @@ class ObservationsDatabase():
         """
 
         if obs_ids is None or jdt_refs is None or len(jdt_refs) != len(obs_ids):
-            log.warning(f'malformed observations data')
+            log.warning('malformed observations data')
             return False
         
-        vals_str = ','.join(map(str,[(id, float(dt), 1) for id,dt in zip(obs_ids,jdt_refs)]))
+        vals = []
+        for obs_id, jdt_ref in zip(obs_ids, jdt_refs):
+            vals.append({"obs_id":obs_id, "jdt_ref":jdt_ref, "status":1})        
 
         if verbose:
             log.info(f'adding {obs_ids} to paired_obs table')
         try:
-            self.dbhandle.execute(f"insert or replace into paired_obs values {vals_str}")
+            self.dbhandle.executemany('insert or replace into paired_obs values(:obs_id, :jdt_ref, :status)', vals)
             self.dbhandle.commit()
             return True
         except Exception as e:
             log.warning(f'failed to add {obs_ids} to paired_obs table')
-            log.warning(vals_str)
+            log.warning(vals)
             log.warning(e)
             return False            
 
@@ -151,16 +156,20 @@ class ObservationsDatabase():
         Parameters:
         met_obs_list    : a list of observation IDs
         """
-        obs_ids_str = ','.join(f"'{id}'" for id in obs_ids)
+        if len(obs_ids) < 1:
+            log.warning('no obs_ids supplied to unpairObs')
+            return False
+
+        qmarks = '?,'*len(obs_ids)
 
         if verbose:
-            log.info(f'unpairing {obs_ids_str}')
+            log.info(f'unpairing {obs_ids}')
         try:
-            self.dbhandle.execute(f"update paired_obs set status = 0 where obs_id in ({obs_ids_str})")
+            self.dbhandle.execute(f'update paired_obs set status = 0 where obs_id in ({qmarks[:-1]})', obs_ids)
             self.dbhandle.commit()
             return True
         except Exception:
-            log.warning(f'failed to unpair {obs_ids_str}')
+            log.warning(f'failed to unpair {obs_ids}')
             return False   
 
     def getLinkedObservations(self, jdt_ref):
@@ -171,7 +180,7 @@ class ObservationsDatabase():
         jdt_ref     : the julian reference date of the trajectory
 
         """
-        cur = self.dbhandle.execute(f"SELECT obs_id FROM paired_obs WHERE obs_dt={jdt_ref} and status=1")
+        cur = self.dbhandle.execute(f"SELECT obs_id FROM paired_obs WHERE obs_dt=? and status=1", (round(jdt_ref,10),))
         return [x[0] for x in cur.fetchall()]
 
     def archiveObsDatabase(self, db_path, arch_prefix, archdate_jd):
@@ -200,7 +209,7 @@ class ObservationsDatabase():
             archdb_fullname = os.path.join(db_path, f'{archdb_name}')
             self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
             try:
-                self.dbhandle.execute(f'insert or replace into archdb.paired_obs select * from paired_obs where obs_dt < {archdate_jd}')
+                self.dbhandle.execute('insert or replace into archdb.paired_obs select * from paired_obs where obs_dt < ?', (archdate_jd,))
             except Exception:
                 log.warning('unable to archive observations database')
                 purge_ok = False
@@ -221,11 +230,11 @@ class ObservationsDatabase():
             archdate = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=21)
             archdate_jd = datetime2JD(archdate)
 
-        cur = self.dbhandle.execute(f'select count(*) from paired_obs where obs_dt < {archdate_jd}')
+        cur = self.dbhandle.execute('select count(*) from paired_obs where obs_dt < ?', (archdate_jd,))
         res = cur.fetchone()
         count = res[0] if res else 0
         log.info(f'  purging {count} records from paired_obs')
-        self.dbhandle.execute(f'delete from paired_obs where obs_dt < {archdate_jd}')
+        self.dbhandle.execute('delete from paired_obs where obs_dt < ?', (archdate_jd,))
         self.dbhandle.commit()
         return 
 
@@ -315,7 +324,8 @@ class TrajectoryDatabase():
         db_name         : database name
         purge_records   : boolean, if true, delete any existing records
         """
-
+        self.db_path = db_path
+        self.db_name = db_name
         db_full_name = os.path.join(db_path, f'{db_name}')
         log.info(f'opening database {db_full_name}')
         con = sqlite3.connect(db_full_name)
@@ -408,7 +418,8 @@ class TrajectoryDatabase():
         traj_reduced    : a TrajReduced object
 
         Returns 
-        True if there is a failed trajectory with the same jdt_ref and matching list of stations
+        True if there is a failed trajectory with the same traj_id or jdt_ref and matching list of stations
+
         """
 
         if not hasattr(traj_reduced, 'jdt_ref') or not hasattr(traj_reduced, 'participating_stations') or not hasattr(traj_reduced, 'ignored_stations'):
@@ -416,7 +427,12 @@ class TrajectoryDatabase():
         
         found = False
         station_list = list(set(traj_reduced.participating_stations + traj_reduced.ignored_stations))
-        res = self.dbhandle.execute(f"SELECT traj_id,participating_stations, ignored_stations FROM failed_trajectories WHERE jdt_ref={traj_reduced.jdt_ref} and status=1")
+        if hasattr(traj_reduced, 'traj_id') and traj_reduced.traj_id is not None and traj_reduced.traj_id != 'None':
+            traj_id = traj_reduced.traj_id
+            res = self.dbhandle.execute('SELECT traj_id,participating_stations, ignored_stations FROM failed_trajectories WHERE traj_id=? and status=1', (traj_id,))
+        else:
+            test_jdt = traj_reduced.jdt_ref
+            res = self.dbhandle.execute('SELECT traj_id,participating_stations, ignored_stations FROM failed_trajectories WHERE jdt_ref=? and status=1', (test_jdt,))
         row = res.fetchone()
         if row is None:
             found = False
@@ -442,7 +458,7 @@ class TrajectoryDatabase():
 
         # if force_add is false, don't replace any existing entry
         if not force_add and hasattr(traj_reduced, 'traj_id') and traj_reduced.traj_id is not None:
-            res = self.dbhandle.execute(f'select traj_id from {tblname} where status = 1 and traj_id = "{traj_reduced.traj_id}"')
+            res = self.dbhandle.execute(f'select traj_id from {tblname} where status=1 and traj_id=?', (traj_reduced.traj_id,))
             row = res.fetchone()
             if row is not None and row[0] !='None':
                 return False
@@ -451,81 +467,54 @@ class TrajectoryDatabase():
             log.info(f'    adding jdt {traj_reduced.jdt_ref} to {tblname}')
 
         try:
+            vals = copy.deepcopy(traj_reduced.__dict__)
+
             # remove the output_dir part from the path so that the data are location-independent
-            traj_file_path = traj_reduced.traj_file_path[traj_reduced.traj_file_path.find('trajectories'):]
-
-            # and remove windows-style path separators
-            traj_file_path = traj_file_path.replace('\\','/')
-
-            obs_ids = 'None' if not hasattr(traj_reduced, 'obs_ids') or traj_reduced.obs_ids is None else traj_reduced.obs_ids
-            ign_obs_ids = 'None' if not hasattr(traj_reduced, 'ign_obs_ids') or traj_reduced.ign_obs_ids is None else traj_reduced.ign_obs_ids
-
-            if failed:
-                # fixup possible bad values
-                traj_id = 'None' if not hasattr(traj_reduced, 'traj_id') or traj_reduced.traj_id is None else traj_reduced.traj_id
-                v_init = 0 if traj_reduced.v_init is None else traj_reduced.v_init
-                radiant_eci_mini = [0,0,0] if traj_reduced.radiant_eci_mini is None else traj_reduced.radiant_eci_mini
-                state_vect_mini = [0,0,0] if traj_reduced.state_vect_mini is None else traj_reduced.state_vect_mini
-
-                sql_str = (f'insert or replace into failed_trajectories values ('
-                            f"{traj_reduced.jdt_ref}, '{traj_id}', '{traj_file_path}',"
-                            f"'{json.dumps(traj_reduced.participating_stations)}',"
-                            f"'{json.dumps(traj_reduced.ignored_stations)}',"
-                            f"'{json.dumps(radiant_eci_mini)}',"
-                            f"'{json.dumps(state_vect_mini)}',"
-                            f"0,{v_init},{traj_reduced.gravity_factor},"
-                            f"'{json.dumps(obs_ids)}',"
-                            f"'{json.dumps(ign_obs_ids)}',1)")
+            if hasattr(traj_reduced, 'traj_file_path') and 'trajectories' in traj_reduced.traj_file_path:
+                vals['traj_file_path'] = traj_reduced.traj_file_path[traj_reduced.traj_file_path.find('trajectories'):].replace('\\','/')
             else:
-                sql_str = (f'insert or replace into trajectories values ('
-                            f"{traj_reduced.jdt_ref}, '{traj_reduced.traj_id}', '{traj_file_path}',"
-                            f"'{json.dumps(traj_reduced.participating_stations)}',"
-                            f"'{json.dumps(traj_reduced.ignored_stations)}',"
-                            f"'{json.dumps(traj_reduced.radiant_eci_mini)}',"
-                            f"'{json.dumps(traj_reduced.state_vect_mini)}',"
-                            f"{traj_reduced.phase_1_only},{traj_reduced.v_init},{traj_reduced.gravity_factor},"
-                            f"{traj_reduced.v0z},{traj_reduced.v_avg},"
-                            f"{traj_reduced.rbeg_jd},{traj_reduced.rend_jd},"
-                            f"{traj_reduced.rbeg_lat},{traj_reduced.rbeg_lon},{traj_reduced.rbeg_ele},"
-                            f"{traj_reduced.rend_lat},{traj_reduced.rend_lon},{traj_reduced.rend_ele},"
-                            f"'{json.dumps(obs_ids)}',"
-                            f"'{json.dumps(ign_obs_ids)}',1)")
+                vals['traj_file_path'] = ''
 
-            sql_str = sql_str.replace('nan','"NaN"')
+            # fixup bad values and convert lists to sqlite-compatible format
+            vals['traj_id'] = 'None' if not hasattr(traj_reduced, 'traj_id') or traj_reduced.traj_id is None else traj_reduced.traj_id
+
+            vals['participating_stations'] = json.dumps([]) if not hasattr(traj_reduced, 'participating_stations') or traj_reduced.participating_stations is None else json.dumps(traj_reduced.participating_stations)
+            vals['ignored_stations'] = json.dumps([]) if not hasattr(traj_reduced, 'ignored_stations') or traj_reduced.ignored_stations is None else json.dumps(traj_reduced.ignored_stations)
+            vals['obs_ids'] = json.dumps([]) if not hasattr(traj_reduced, 'obs_ids') or traj_reduced.obs_ids is None else json.dumps(traj_reduced.obs_ids)
+            vals['ign_obs_ids'] = json.dumps([]) if not hasattr(traj_reduced, 'ign_obs_ids') or traj_reduced.ign_obs_ids is None else json.dumps(traj_reduced.ign_obs_ids)
+
+            vals['v_init'] = 0 if not hasattr(traj_reduced, 'v_init') or traj_reduced.v_init is None else traj_reduced.v_init
+
+            vals['radiant_eci_mini'] = json.dumps([0,0,0]) if traj_reduced.radiant_eci_mini is None else json.dumps(traj_reduced.radiant_eci_mini)
+            vals['state_vect_mini'] = json.dumps([0,0,0]) if traj_reduced.state_vect_mini is None else json.dumps(traj_reduced.state_vect_mini)
         except Exception as e:
             log.warning('malformed trajectory')
-            print(e)
+            log.warning(e)
             return False
+
         try:
-            self.dbhandle.execute(sql_str)
+            if failed:
+                self.dbhandle.execute('insert or replace into failed_trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
+                                    ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
+                                    ':obs_ids,:ign_obs_ids,1)', \
+                                    vals)
+            else:
+                self.dbhandle.execute('insert or replace into trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
+                                    ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
+                                    ':v0z,:v_avg,:rbeg_jd,:rend_jd,:rbeg_lat,:rbeg_lon,:rbeg_ele,:rend_lat,:rend_lon,:rend_ele,' \
+                                    ':obs_ids,:ign_obs_ids,1)', \
+                                    vals)
+                
         except Exception as e:
-            print(e)
-            print(sql_str)
+            log.warning('problem inserting trajectory')
+            log.warning(str(e))
             return False
         self.dbhandle.commit()
         return True
-
-    def removeTrajectory(self, traj_reduced, failed=False, verbose=False):
-        """
-        Mark a trajectory unsolved
-        If an entry exists, update the status to 0. 
-
-        Parameters:
-        traj_reduced    : a TrajReduced object
-        failed          : boolean, if true then remove from the fails list
-        """
-        if verbose:
-            log.info(f'removing {traj_reduced.traj_id}')
-        table_name = 'failed_trajectories' if failed else 'trajectories'
-
-        self.dbhandle.execute(f"update {table_name} set status=0 where jdt_ref='{traj_reduced.jdt_ref}'")
-        self.dbhandle.commit()
-
-        return True
-    
+   
     def removeTrajectoryById(self, traj_id, failed=False, verbose=False):
         """
-        Mark a trajectory unsolved
+        Mark a trajectory removed, matching on the traj_id
         If an entry exists, update the status to 0. 
 
         Parameters:
@@ -539,7 +528,7 @@ class TrajectoryDatabase():
             log.info(f'removing {traj_id}')
         table_name = 'failed_trajectories' if failed else 'trajectories'
 
-        self.dbhandle.execute(f"update {table_name} set status=0 where traj_id='{traj_id}'")
+        self.dbhandle.execute(f"update {table_name} set status=0 where traj_id=?", (traj_id,))
         self.dbhandle.commit()
 
         return True
@@ -557,6 +546,7 @@ class TrajectoryDatabase():
 
         Returns:
         trajs: json list of traj_reduced objects
+
         """
 
         jdt_start, jdt_end = jdt_range
@@ -567,9 +557,9 @@ class TrajectoryDatabase():
             log.info(f'getting trajectories between {jd2Date(jdt_start, dt_obj=True).strftime("%Y%m%d_%M%M%S.%f")} and {jd2Date(jdt_end, dt_obj=True).strftime("%Y%m%d_%M%M%S.%f")}')
 
         if not jdt_end:
-            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>={jdt_start} {sts_test}")
+            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? {sts_test}", (jdt_start,))
         else:
-            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} {sts_test}")
+            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? {sts_test}", (jdt_start,jdt_end,))
         trajs = []
         for rw in rows.fetchall():
             rw = [np.nan if x == 'NaN' else x for x in rw]   
@@ -605,7 +595,7 @@ class TrajectoryDatabase():
 
         Parameters:
         output_dir  : output_dir specified when invoking CorrelateRMS - will be prepended to the trajectory path
-        jdt_range   : tuple of julian dates to retrieve data betwee
+        jdt_range   : tuple of julian dates to retrieve data between
         failed      : boolean, if true retrieve names of fails, otherwise retrieve successful 
     
         Returns:
@@ -619,10 +609,10 @@ class TrajectoryDatabase():
             cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} where status=1 order by jdt_ref")
             rows = cur.fetchall()
         elif not jdt_end:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref={jdt_start} and status=1 order by jdt_ref")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref=? and status=1 order by jdt_ref", (jdt_start,))
             rows = cur.fetchall()
         else:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref>={jdt_start} and jdt_ref<={jdt_end} and status=1 order by jdt_ref")
+            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? and status=1 order by jdt_ref", (jdt_start, jdt_end,))
             rows = cur.fetchall()
         trajs = []
         for rw in rows:
@@ -660,7 +650,7 @@ class TrajectoryDatabase():
             for table_name in ['trajectories', 'failed_trajectories']:
                 try:
                     # bulk-copy if possible
-                    cur.execute(f'insert or replace into archdb.{table_name} select * from {table_name} where jdt_ref < {archdate_jd}')
+                    cur.execute(f'insert or replace into archdb.{table_name} select * from {table_name} where jdt_ref<?',(archdate_jd,))
                 except Exception:
                     log.warning(f'unable to archive {table_name} in trajectories database')
                     purge_ok = False
@@ -685,11 +675,11 @@ class TrajectoryDatabase():
             archdate_jd = datetime2JD(archdate)
 
         for table_name in ['trajectories', 'failed_trajectories']:
-            cur = self.dbhandle.execute(f'select count(*) from {table_name} where jdt_ref < {archdate_jd}')
+            cur = self.dbhandle.execute(f'select count(*) from {table_name} where jdt_ref<?', (archdate_jd,))
             res = cur.fetchone()
             count = res[0] if res else 0
             log.info(f'  purging {count} records from {table_name}')
-            self.dbhandle.execute(f'delete from {table_name} where jdt_ref < {archdate_jd}')
+            self.dbhandle.execute(f'delete from {table_name} where jdt_ref<?', (archdate_jd,))
         self.dbhandle.commit()
         return         
 
@@ -773,6 +763,8 @@ class CandidateDatabase():
         keep            : Amount of data to keep. Default 21 days
 
         """
+        self.db_path = db_path
+        self.db_name = db_name
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
@@ -782,7 +774,7 @@ class CandidateDatabase():
         if res.fetchone() is None:
             if verbose:
                 log.info('create table candidates')
-            con.execute("CREATE TABLE candidates(cand_id VARCHAR UNIQUE, ref_dt REAL, obs_ids VARCHAR, status INTEGER)")
+            con.execute('CREATE TABLE candidates(cand_id VARCHAR UNIQUE, ref_dt REAL, obs_ids VARCHAR, status INTEGER)')
         con.commit()
         self.dbhandle = con
         if keep > 0:
@@ -825,13 +817,13 @@ class CandidateDatabase():
         """
         
         to_be_added = True
-        cur = self.dbhandle.execute(f"SELECT * FROM candidates WHERE cand_id='{cand_id}' and status=1")
+        cur = self.dbhandle.execute('SELECT * FROM candidates WHERE cand_id=? and status=1', (cand_id,))
         if cur.fetchone() is not None:
             to_be_added = False
         else:
             to_be_added = True
             obs_ids_str = json.dumps(list(set(obs_ids)))
-            self.dbhandle.execute(f"insert into candidates values ('{cand_id}',{ref_dt},'{obs_ids_str}',1)")
+            self.dbhandle.execute('insert into candidates values (?,?,?,1)',(cand_id,ref_dt,obs_ids_str,))
             self.dbhandle.commit()
         if verbose:
             log.info(f'{cand_id} {"was added to the database" if to_be_added else "already present"}')
@@ -851,7 +843,7 @@ class CandidateDatabase():
         """
         
         obs_ids = []
-        cur = self.dbhandle.execute(f"SELECT obs_ids FROM candidates WHERE cand_id='{cand_id}' and status=1")
+        cur = self.dbhandle.execute('SELECT obs_ids FROM candidates WHERE cand_id=? and status=1', (cand_id,))
         rw = cur.fetchone()
         if rw is not None:
             obs_ids= json.loads(rw[0])
@@ -872,7 +864,7 @@ class CandidateDatabase():
             keep_dt = jd2Date(archdate_jd,dt_obj=True)
 
         log.info(f'purging candidates older than {keep_dt.isoformat()}')
-        self.dbhandle.execute(f"delete from candidates where ref_dt < {keep_dt.timestamp()}")
+        self.dbhandle.execute('delete from candidates where ref_dt < ?', (keep_dt.timestamp(),))
         self.dbhandle.commit()
         return 
     
@@ -903,9 +895,9 @@ class CandidateDatabase():
             archdb_fullname = os.path.join(db_path, f'{archdb_name}')
             cur = self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
             try:
-                cur.execute(f'insert or replace into archdb.candidates select * from candidates where ref_dt < {keep_dt.timestamp()}')
+                cur.execute('insert or replace into archdb.candidates select * from candidates where ref_dt < ?', (keep_dt.timestamp(),))
             except Exception:
-                log.warning(f'unable to archive candidate database')
+                log.warning('unable to archive candidate database')
                 purge_ok = False
 
         self.dbhandle.execute("detach database 'archdb'")
@@ -1008,7 +1000,7 @@ if __name__ == '__main__':
 
     arg_parser.add_argument('--stmt', type=str, default=None, help='statement to execute eg "select * from paired_obs"')
 
-    arg_parser.add_argument("--logdir", type=str, default=None,
+    arg_parser.add_argument('--logdir', type=str, default=None,
         help="Path to the directory where the log files will be stored. If not given, a logs folder will be created in the database folder")
       
     arg_parser.add_argument('-r', '--timerange', metavar='TIME_RANGE',
@@ -1028,9 +1020,9 @@ if __name__ == '__main__':
         datefmt='%Y/%m/%d %H:%M:%S')
 
     # Init the file handler
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"correlate_db_{timestamp}.log")
-    file_handler = logging.handlers.TimedRotatingFileHandler(log_file, when="midnight", backupCount=7)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(log_dir, f'correlate_db_{timestamp}.log')
+    file_handler = logging.handlers.TimedRotatingFileHandler(log_file, when='midnight', backupCount=7)
     file_handler.setFormatter(log_formatter)
     log.addHandler(file_handler)
 
@@ -1047,12 +1039,12 @@ if __name__ == '__main__':
 
     dt_range = None
     if cml_args.timerange is not None:
-        time_beg, time_end = cml_args.timerange.strip("(").strip(")").split(",")
+        time_beg, time_end = cml_args.timerange.strip('(').strip(')').split(',')
         dt_beg = datetime.datetime.strptime(time_beg, "%Y%m%d-%H%M%S").replace(tzinfo=datetime.timezone.utc)
         dt_end = datetime.datetime.strptime(time_end, "%Y%m%d-%H%M%S").replace(tzinfo=datetime.timezone.utc)
-        log.info("Custom time range:")
-        log.info("    BEG: {:s}".format(str(dt_beg)))
-        log.info("    END: {:s}".format(str(dt_end)))
+        log.info('Custom time range:')
+        log.info('    BEG: {:s}'.format(str(dt_beg)))
+        log.info('    END: {:s}'.format(str(dt_end)))
         dt_range = [dt_beg, dt_end]
 
 
