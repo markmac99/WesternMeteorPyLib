@@ -1492,7 +1492,7 @@ class RMSDataHandle(object):
             if os.path.isfile(traj_reduced.traj_file_path):
                 log.warning(f'unable to remove {traj_dir}')        
 
-        self.trajectory_db.removeTrajectory(traj_reduced)
+        self.trajectory_db.removeTrajectoryById(traj_reduced.traj_id)
 
     def checkTrajIfFailed(self, traj):
         """ 
