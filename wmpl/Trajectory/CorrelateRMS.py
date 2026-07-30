@@ -609,7 +609,7 @@ class RMSDataHandle(object):
                     log.error(f"Unknown error removing partially-processed file: {file_name}: {e}")
             else:
                 try:
-                    os.rename(file_name, new_name)
+                    os.replace(file_name, new_name)
                     i += 1
                 except FileNotFoundError:
                     log.warning(f"Unable to rename partially-processed file: {file_name}")
@@ -1597,9 +1597,7 @@ class RMSDataHandle(object):
 
                 # now we've loaded the phase 1 solution, move it to prevent reprocessing
                 procfile = os.path.join(self.phase1_dir, 'processed', pick)
-                if os.path.isfile(procfile):
-                    os.remove(procfile)
-                os.rename(os.path.join(self.phase1_dir, pick), procfile)
+                os.replace(os.path.join(self.phase1_dir, pick), procfile)
 
                 self.phase1Trajectories.append(traj)
                 log.info(f'loaded {traj.traj_id}')
@@ -1678,6 +1676,31 @@ class RMSDataHandle(object):
                 else:
                     log.warning(f'unable to fully merge the remote traj database {trajdb_path}')
 
+            if verbose:
+                log.info(f"updating inflight markers in {os.path.join(node.dirpath,'files')}")
+            for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_candidates*.txt')):
+                cands = open(inflight_path).readlines()
+                for cand in cands:
+                    candname = os.path.join(node.dirpath,'files','candidates',f'{cand}.inflight')
+                    procname = os.path.join(self.candidate_dir,'processed', f'{cand}')
+                    if os.path.isfile(candname):
+                        try:
+                            os.replace(candname, procname)
+                        except Exception:
+                            # leave it for next time
+                            pass
+            for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_trajectories*.txt')):
+                cands = open(inflight_path).readlines()
+                for cand in cands:
+                    candname = os.path.join(node.dirpath,'files','phase1',f'{cand}.inflight')
+                    procname = os.path.join(self.phase1_dir,'processed', f'{cand}')
+                    if os.path.isfile(candname):
+                        try:
+                            os.replace(candname, procname)
+                        except Exception:
+                            # leave it for next time
+                            pass
+                
             i = 0
             remote_trajdir = os.path.join(node.dirpath, 'files', 'trajectories')
             if os.path.isdir(remote_trajdir):
@@ -1939,8 +1962,17 @@ class RMSDataHandle(object):
                 bucket_num = secrets.randbelow(len(bucket_list))
                 bucket = bucket_list[bucket_num]
 
+                if bucket.capacity == 0 or bucket.mode != required_mode:
+                    tested_buckets.append(bucket_num)
+                    continue
+
                 # if the child isn't the right mode, or the stop-flag exists, skip it
-                stop_sts = os.path.isfile(os.path.join(bucket.dirpath, 'files', 'stop'))
+                try:
+                    stop_sts = os.path.isfile(os.path.join(bucket.dirpath, 'files', 'stop'))
+                except Exception:
+                    # node is inaccessible, consider it unusable
+                    tested_buckets.append(bucket_num)
+                    continue
 
                 if (bucket.mode != required_mode and bucket.mode != -1) or stop_sts:
                     tested_buckets.append(bucket_num)
@@ -2397,14 +2429,15 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                             dh.closeTrajectoryDatabase()
                             dh.closeObservationsDatabase()
 
-
+                        purge_records = False
                         if dh.RemoteDatahandler.uploadToMaster(dh.output_dir, verbose=verbose):
+                            purge_records = True
 
-                            # if we successfully uploaded data, truncate the tables here so they are clean for the next run
-                            # otherwise do not truncate it, so we push it next time instead
-                            if mcmode != MCMODE_PHASE2:
-                                dh.trajectory_db = TrajectoryDatabase(dh.db_dir, purge_records=True)
-                                dh.observations_db = ObservationsDatabase(dh.db_dir, purge_records=True)
+                        # if we successfully uploaded data, truncate the tables here so they are clean for the next run
+                        # otherwise do not truncate it, so we push the data next time instead
+                        if mcmode != MCMODE_PHASE2:
+                            dh.trajectory_db = TrajectoryDatabase(dh.db_dir, purge_records=purge_records)
+                            dh.observations_db = ObservationsDatabase(dh.db_dir, purge_records=purge_records)
 
                     if dh.RemoteDatahandler and dh.RemoteDatahandler.mode == 'parent':
                         # move any uploaded data and then check and rebalance any pending cands or phase1s
