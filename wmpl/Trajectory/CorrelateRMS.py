@@ -1681,8 +1681,8 @@ class RMSDataHandle(object):
             for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_candidates*.txt')):
                 cands = open(inflight_path).readlines()
                 for cand in cands:
-                    candname = os.path.join(node.dirpath,'files','candidates',f'{cand}.inflight')
-                    procname = os.path.join(self.candidate_dir,'processed', f'{cand}')
+                    candname = os.path.join(node.dirpath,'files','candidates',f'{cand}.processing')
+                    procname = os.path.join(self.candidate_dir,'processed', f'{cand}-{node.nodename}')
                     if os.path.isfile(candname):
                         try:
                             os.replace(candname, procname)
@@ -1692,8 +1692,8 @@ class RMSDataHandle(object):
             for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_trajectories*.txt')):
                 cands = open(inflight_path).readlines()
                 for cand in cands:
-                    candname = os.path.join(node.dirpath,'files','phase1',f'{cand}.inflight')
-                    procname = os.path.join(self.phase1_dir,'processed', f'{cand}')
+                    candname = os.path.join(node.dirpath,'files','phase1',f'{cand}.processing')
+                    procname = os.path.join(self.phase1_dir,'processed', f'{cand}-{node.nodename}')
                     if os.path.isfile(candname):
                         try:
                             os.replace(candname, procname)
