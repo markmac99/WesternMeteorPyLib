@@ -26,6 +26,8 @@ import logging
 import shutil
 import uuid
 import time
+import platform
+import glob
 
 from configparser import ConfigParser
 
@@ -70,7 +72,7 @@ class RemoteDataHandler():
 
         self.ssh_client = None
         self.sftp_client = None
-        
+
         cfg = ConfigParser()
         cfg.read(cfg_file)
         if not cfg.has_option('mode', 'mode'):
@@ -166,51 +168,76 @@ class RemoteDataHandler():
             self.ssh_client = None
         return
     
-    def putWithRetry(self, local_name, remname):
+    ########################################################    
+    # functions used by the client nodes
+
+    def putWithRetry(self, local_name, rem_name):
+        """
+        Upload a file to the parent node. 
+        We use a temporary name because the remote node may be running several processes in parallel.
+
+        arguments:
+        local_name: [string] the file to upload
+        rem_name:   [string] the target name for the file
+        """
+
+        temp_rem_name = f'{rem_name}.filepart'
         for i in range(10): 
             try:
-                self.sftp_client.put(local_name, remname)
-                return True
-            except Exception:
+                # try to put the file. If this fails, catch the exception further down, and retry
+                self.sftp_client.put(local_name, temp_rem_name)
+
+                # now try to rename the file to the required final name, returning immediately if we succeed
+                # we have to remove any existing file with that name first. We don't mind if remove() fails 
+                # because we'll catch any issues when rename()ing.
+                try:
+                    self.sftp_client.remove(rem_name)
+                except Exception:
+                    pass
+                try:                    
+                    self.sftp_client.rename(temp_rem_name, rem_name)
+                    return True
+                except Exception as e:
+                    # if we can't remove or rename the file, log a warning and try again 
+                    log.warning(str(e))
+            except Exception as e:
+                log.warning(str(e))
                 time.sleep(1)
         log.warning(f'upload of {local_name} failed after 10 retries')
         return False
 
     def getWithRetry(self, rem_name, local_name):
+        """
+        Retrieve a file from the remote server, retrying up to ten times.
+        The function renames the remote file to indicate its being processed and then downloads it.
+
+        Arguments:
+        rem_name:   [string] remote filename to collect.
+        local_name: [string] local name to save to.
+        """
+        temp_rem_name = f'{rem_name}.inflight'
         for i in range(10): 
             try:
-                self.sftp_client.get(rem_name, local_name)
-                return True
+                # remove the inflight file if it exists.  If the file doesn't exist stat() will raise an exception
+                # which is caught. Its possible the file exists but we can't remove() it, but this 
+                # will picked up in the subsequent rename() call. 
+                self.sftp_client.stat(temp_rem_name)
+                self.sftp_client.remove(temp_rem_name)
             except Exception:
-                time.sleep(1)
+                pass
+            try:
+                # rename the file to indicate its being processed, then download it. 
+                # If the rename or get fail, log a warning. 
+                # No need to use a temporary name locally as this function is only called by the client. 
+                self.sftp_client.rename(rem_name, temp_rem_name)
+                self.sftp_client.get(temp_rem_name, local_name)
+                return True
+            except Exception as e:
+                log.warning(str(e))
+            time.sleep(1)
         log.warning(f'download of {rem_name} failed after 10 retries')
         return False
     
-    def renameWithRetry(self, rem_name, new_rem_name):
-        try:
-            # if stat succeeds, then the remote file was already moved to processed folder
-            # in which case we can simply remove the original remote file 
-            self.sftp_client.stat(new_rem_name)
-            try:
-                self.sftp_client.remove(rem_name)
-                return True
-            except Exception:
-                log.warning(f'processed copy already exists but unable to remove {rem_name}')
-                return False
-        except Exception:
-            # if stat fails then the processed file doesn't exist so we can safely rename 
-            for i in range(10): 
-                try:
-                    self.sftp_client.rename(rem_name, new_rem_name)
-                    return True
-                except Exception:
-                    time.sleep(1)
-            log.warning(f'rename of {rem_name} failed after 10 retries')
-        return False
-
-    ########################################################    
-    # functions used by the client nodes
-
     def collectRemoteData(self, datatype, output_dir, verbose=False):
         """
         Collect trajectory or candidate pickles from a remote server for local processing
@@ -232,6 +259,7 @@ class RemoteDataHandler():
                 pass
         
         try:
+            retr_list = []
             rem_dir = f'files/{datatype}'
             files = self.sftp_client.listdir(rem_dir)
             files = [f for f in files if '.pickle' in f and 'processing' not in f]
@@ -246,19 +274,19 @@ class RemoteDataHandler():
             num_received = 0
             for trajfile in files:
                 fullname = f'{rem_dir}/{trajfile}'
-                processed_name = f'{rem_dir}/processed/{trajfile}'
                 localname = os.path.join(local_dir, trajfile)
                 if verbose:
                     log.info(f'downloading {fullname} to {localname}')
 
-                res = self.getWithRetry(fullname, localname)
-                if res:
+                if self.getWithRetry(fullname, localname):
                     num_received += 1
-                    if not self.renameWithRetry(fullname, processed_name):
-                        log.warning(f'failed to move {fullname} to processed/, leaving it to be solved again next pass')
-                        os.remove(localname)
+                    retr_list.append(trajfile)
 
+            uuid_str = str(uuid.uuid4())
             log.info(f'Obtained {num_received} {"trajectories" if datatype=="phase1" else "candidates"}')
+            if len(retr_list) > 0:
+                outfname = f"current_trajectories-{uuid_str}.txt" if datatype=="phase1" else f"current_candidates-{uuid_str}.txt"
+                open(os.path.join(output_dir,outfname),'w').writelines('\n'.join(retr_list))
 
         except Exception as e:
             log.warning('Problem with download')
@@ -370,6 +398,22 @@ class RemoteDataHandler():
             # if everything uploaded we can remove the entire 'trajectories' folder
             if success_flag: 
                 shutil.rmtree(traj_dir, ignore_errors=True)
+
+        # Now the text file containing a list of pickles that got downloaded.
+        # This is used by the master node to move the 'inflight' files to the processed folder.
+        # Add a unique suffix so that subsequent runs don't overwrite each other. 
+
+        for infofile in ['current_trajectories', 'current_candidates']:
+            # upload any files matching the pattern. IF successful, delete them.
+            local_files = glob.glob(os.path.join(source_dir, f'{infofile}-*.txt'))
+            for local_name in local_files:
+                rem_file = f'files/{os.path.basename(local_name)}'
+                if os.path.isfile(local_name):
+                    if self.putWithRetry(local_name, rem_file):
+                        log.info(f'uploaded {local_name}')
+                        os.remove(local_name)
+                    else:
+                        log.warning(f'problem uploading {local_name}, will retry later')
 
         # finally the databases - upload these with a random name for uniqueness at the server side
         # Again, if any upload fails mark the status False
