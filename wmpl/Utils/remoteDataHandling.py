@@ -93,8 +93,20 @@ class RemoteDataHandler():
             self.nodenames = [k for k in cfg['children'].keys()]
             self.nodes = [k.split(',') for k in cfg['children'].values()]
             self.nodes = [RemoteNode(nn,x[0],x[1],x[2]) for nn,x in zip(self.nodenames,self.nodes) if len(x)==3]
+            for i in range(0, len(self.nodes)):
+                # make sure the node's files are accessible
+                sts = False
+                try:
+                    sts = os.path.isdir(os.path.join(self.nodes[i].dirpath, 'files'))
+                except Exception:
+                    # node is inaccessible, consider it unusable
+                    self.nodes[i].capacity = 0
+                if not sts:
+                    self.nodes[i].capacity = 0
+                    
             self.nodes.append(RemoteNode('localhost', None, -1, -1))
-            activenodes = [n.nodename for n in self.nodes if n.capacity!=0 and n.mode!=0]
+            self.nodes = [n for n in self.nodes if n.capacity!=0 and n.mode!=0]
+            activenodes = [n.nodename for n in self.nodes]
             log.info(f' using nodes {activenodes}')
         else:
             # 'child' mode
