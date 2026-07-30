@@ -227,7 +227,7 @@ class RemoteDataHandler():
         rem_name:   [string] remote filename to collect.
         local_name: [string] local name to save to.
         """
-        temp_rem_name = f'{rem_name}.inflight'
+        temp_rem_name = f'{rem_name}.processing'
         for i in range(10): 
             try:
                 # remove the inflight file if it exists.  If the file doesn't exist stat() will raise an exception
