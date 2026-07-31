@@ -1675,31 +1675,6 @@ class RMSDataHandle(object):
                     os.remove(trajdb_path)
                 else:
                     log.warning(f'unable to fully merge the remote traj database {trajdb_path}')
-
-            if verbose:
-                log.info(f"updating inflight markers in {os.path.join(node.dirpath,'files')}")
-            for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_candidates*.txt')):
-                cands = open(inflight_path).readlines()
-                for cand in cands:
-                    candname = os.path.join(node.dirpath,'files','candidates',f'{cand}.processing')
-                    procname = os.path.join(self.candidate_dir,'processed', f'{cand}-{node.nodename}')
-                    if os.path.isfile(candname):
-                        try:
-                            os.replace(candname, procname)
-                        except Exception:
-                            # leave it for next time
-                            pass
-            for inflight_path in glob.glob(os.path.join(node.dirpath,'files','current_trajectories*.txt')):
-                cands = open(inflight_path).readlines()
-                for cand in cands:
-                    candname = os.path.join(node.dirpath,'files','phase1',f'{cand}.processing')
-                    procname = os.path.join(self.phase1_dir,'processed', f'{cand}-{node.nodename}')
-                    if os.path.isfile(candname):
-                        try:
-                            os.replace(candname, procname)
-                        except Exception:
-                            # leave it for next time
-                            pass
                 
             i = 0
             remote_trajdir = os.path.join(node.dirpath, 'files', 'trajectories')
@@ -1757,8 +1732,7 @@ class RMSDataHandle(object):
                 targ_dir = os.path.join(self.candidate_dir, 'processed')
                 for i, fil in enumerate([x for x in os.listdir(remote_canddir) if '.pickle' in x]):
                     full_name = os.path.join(remote_canddir, fil)
-                    shutil.copy(full_name, targ_dir)
-                    os.remove(full_name)
+                    os.replace(full_name, targ_dir)
 
                 if i > 0:
                     log.info(f'moved {i+1} processed candidates from {node.nodename}')
