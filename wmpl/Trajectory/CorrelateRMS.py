@@ -578,7 +578,7 @@ class RMSDataHandle(object):
         num_removed = 0
         log.info(f'purging processed data from {dir_path} thats older than {days_back} days')
 
-        for file_name in glob.glob(os.path.join(dir_path,'*.pickle')):
+        for file_name in glob.glob(os.path.join(dir_path,'*.pickle*')):
             try:
                 file_dt = os.stat(file_name).st_mtime 
                 if file_dt < refdt:
@@ -1797,8 +1797,10 @@ class RMSDataHandle(object):
                     # the node is waiting for data
                     log.info(f'{node.nodename} idle, giving it extra candidates')
                     i = 0
-                    # limit child capacity to 5000 if its set to -1
+                    # limit child capacity to 1000 if its set to -1, and don't reallocate more than half all data
                     max_capacity = node.capacity if node.capacity >= 0 else 1000
+                    max_to_move = int(len(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))) / 2 )
+                    max_capacity = min(max_capacity, max_to_move)
                     for i, full_name in enumerate(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))):
                         log.info(f'moving {full_name} to {node.nodename}')
 
@@ -1813,8 +1815,10 @@ class RMSDataHandle(object):
                     # the node is waiting for data
                     log.info(f'{node.nodename} idle, giving it extra phase1 data')
                     i = 0
-                    # limit child capacity to 5000 if its set to -1
-                    max_capacity = node.capacity if node.capacity >= 0 else 5000
+                    # limit child capacity to 1000 if its set to -1, and don't reallocate more than half all data
+                    max_capacity = node.capacity if node.capacity >= 0 else 1000
+                    max_to_move = int(len(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))) / 2 )
+                    max_capacity = min(max_capacity, max_to_move)
                     for i, full_name in enumerate(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))):
                         log.info(f'moving {full_name} to {node.nodename}')
                         src_path, src_name = os.path.split(full_name)

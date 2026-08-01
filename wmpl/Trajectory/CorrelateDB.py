@@ -288,7 +288,13 @@ class ObservationsDatabase():
             log.warning(f'source database missing: {source_db_path}')
             return 
         # attach the other db, copy the records then detach it
-        self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        try:
+            self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        except Exception:
+            log.warning(f'unable to attach {source_db_path} - file may be corrupt')
+            # return true because if the file is corrupt we need to skip it
+            return True
+
         res = self.dbhandle.execute("SELECT name FROM sourcedb.sqlite_master WHERE name='paired_obs'")
         if res.fetchone() is None:
             # table is missing so nothing to do
@@ -730,7 +736,12 @@ class TrajectoryDatabase():
             log.warning(f'source database missing: {source_db_path}')
             return 
         # attach the other db, copy the records then detach it
-        cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        try:
+            cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        except Exception:
+            log.warning(f'unable to attach {source_db_path}, it may be corrupt')
+            # return True so that the corrupt file is skipped / deleted
+            return True
 
         status = True
         for table_name in ['trajectories', 'failed_trajectories']:
@@ -920,7 +931,12 @@ class CandidateDatabase():
             log.warning(f'source database missing: {source_db_path}')
             return 
         # attach the other db, copy the records then detach it
-        cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        try:
+            cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+        except Exception:
+            log.warning(f'unable to attach {source_db_path} - file may be corrupt')
+            # return true because if the file is corrupt we need to skip it
+            return True
 
         status = True
         for table_name in ['candidates']:
