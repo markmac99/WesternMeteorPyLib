@@ -1711,8 +1711,7 @@ class RMSDataHandle(object):
                             shutil.rmtree(src_path,ignore_errors=False)
                         except Exception:
                             log.warning(f'unable to remove {src_name}, will try later')
-            if i > 0:
-                log.info(f'moved {i+1} trajectories')
+            log.info(f'moved {i+1} trajectories')
 
             # if the node was in mode 1 then move any uploaded phase1 solutions
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1')
@@ -1723,8 +1722,7 @@ class RMSDataHandle(object):
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
                     safeCopyOrMove(fil, remote_ph1dir, self.phase1_dir, move=True)
 
-                if i > 0:
-                    log.info(f'moved {i+1} new phase 1 solutions from {node.nodename}')
+                log.info(f'moved {i+1} new phase 1 solutions from {node.nodename}')
             
             # if the node was in mode 1 then move any uploaded processed candidates
             # no need to use a temporary name here as we don't read from 'processed'
@@ -1736,8 +1734,7 @@ class RMSDataHandle(object):
                 for i, fil in enumerate([x for x in os.listdir(remote_canddir) if '.pickle' in x]):
                     safeCopyOrMove(fil, remote_canddir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
-                if i > 0:
-                    log.info(f'moved {i+1} processed candidates from {node.nodename}')
+                log.info(f'moved {i+1} processed candidates from {node.nodename}')
             
             # if the node was in mode 2 then move any processed phase1 solutions
             # no need to use a temporary name here as we don't read from 'processed'
@@ -2401,14 +2398,14 @@ contain data folders. Data folders should have FTPdetectinfo files together with
                     num_done = tc.run(event_time_range=event_time_range, mcmode=mcmode, bin_time_range=bin_time_range, verbose=verbose)
 
                     if dh.RemoteDatahandler and dh.RemoteDatahandler.mode == 'child' and num_done > 0:
-                        log.info('uploading to master node')
-                        # close the databases and upload the data to the master node
+                        log.info('uploading to remote node')
+                        # close the databases and upload the data to the parent node
                         if mcmode != MCMODE_PHASE2:
                             dh.closeTrajectoryDatabase()
                             dh.closeObservationsDatabase()
 
                         purge_records = False
-                        if dh.RemoteDatahandler.uploadToMaster(dh.output_dir, verbose=verbose):
+                        if dh.RemoteDatahandler.uploadToRemote(dh.output_dir, verbose=verbose):
                             purge_records = True
 
                         # if we successfully uploaded data, truncate the tables here so they are clean for the next run

@@ -291,7 +291,7 @@ class RemoteDataHandler():
         self.closeSFTPConnection()
         return True
 
-    def uploadToMaster(self, source_dir, verbose=False):
+    def uploadToRemote(self, source_dir, verbose=False):
         """
         upload the trajectory pickle and report to a remote host for integration
         into the solved dataset
@@ -348,15 +348,15 @@ class RemoteDataHandler():
             i=0
             fils = os.listdir(phase1_dir)
             for fil in [f for f in fils if '.pickle' in f]:
-                local_name = os.path.join(phase1_dir, fil)
-                if os.path.isdir(local_name):
+                local_ph1_name = os.path.join(phase1_dir, fil)
+                if os.path.isdir(local_ph1_name):
                     continue
-                remname = f'files/phase1/{fil}'
-                if verbose:
-                    log.info(f'uploading {local_name} to {remname}')
+                rem_ph1_name = f'files/phase1/{fil}'
+                #if verbose:
+                log.info(f'uploading {local_name} to {rem_ph1_name}')
                 # If the upload is successful, we can delete the local file
-                if self.putWithRetry(local_name, rem_name): 
-                    os.remove(local_name)
+                if self.putWithRetry(local_ph1_name, rem_ph1_name): 
+                    os.remove(local_ph1_name)
                     i += 1
                 else:
                     success_flag = False
