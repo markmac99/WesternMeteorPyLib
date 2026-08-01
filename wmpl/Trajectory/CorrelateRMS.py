@@ -25,8 +25,9 @@ import secrets
 
 from wmpl.Formats.CAMS import loadFTPDetectInfo
 from wmpl.Trajectory.CorrelateEngine import TrajectoryCorrelator, TrajectoryConstraints, getMcModeStr
+from wmpl.Trajectory.Trajectory import Trajectory
 from wmpl.Utils.Math import generateDatetimeBins
-from wmpl.Utils.OSTools import mkdirP
+from wmpl.Utils.OSTools import mkdirP, safeCopyOrMove
 from wmpl.Utils.Pickling import loadPickle, savePickle
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 from wmpl.Utils.remoteDataHandling import RemoteDataHandler
@@ -1576,7 +1577,8 @@ class RMSDataHandle(object):
             # Try loading a full trajectory
             try:
                 traj = loadPickle(self.phase1_dir, pick)
-
+                if not isinstance(traj, Trajectory):
+                    continue
                 traj_dir = self.generateTrajOutputDirectoryPath(traj, make_dirs=False)
                 # Add the filepath if not present so we can remove updated trajectories
                 if not hasattr(traj, 'traj_file_path'):
@@ -1597,6 +1599,7 @@ class RMSDataHandle(object):
 
                 # now we've loaded the phase 1 solution, move it to prevent reprocessing
                 procfile = os.path.join(self.phase1_dir, 'processed', pick)
+                ## FIXME do i really want to move them before processing has completed
                 os.replace(os.path.join(self.phase1_dir, pick), procfile)
 
                 self.phase1Trajectories.append(traj)
@@ -1621,13 +1624,15 @@ class RMSDataHandle(object):
                 continue
             try:
                 loadedpickle = loadPickle(save_path, fil)
-                candidate_trajectories.append(loadedpickle)
-
+                if isinstance(loadedpickle, list):
+                    candidate_trajectories.append(loadedpickle)
+                else:
+                    log.info(f'malformed candidate {fil}')
                 # now move the loaded file so we don't try to reprocess it 
                 full_name = os.path.join(save_path, fil)
                 procfile = os.path.join(procpath, fil)
-                shutil.copy(full_name, procfile)
-                os.remove(full_name)
+                # FIXME again do i want to do this before i have processed it
+                os.replace(full_name, procfile)
 
             except Exception: 
                 log.info(f'Candidate {fil} went away, probably picked up by another process')
@@ -1664,7 +1669,7 @@ class RMSDataHandle(object):
                         os.remove(f'{obsdb_path}-wal')
                         os.remove(f'{obsdb_path}-shm')
                     except Exception:
-                        log.warning(f'unable to fully merge the remote obs database {obsdb_path}')
+                        log.warning(f'unable to fully merge the remote obs database {obsdb_path}, will try again later')
                         pass
 
             
@@ -1674,7 +1679,7 @@ class RMSDataHandle(object):
                 if self.trajectory_db.mergeTrajDatabase(trajdb_path):
                     os.remove(trajdb_path)
                 else:
-                    log.warning(f'unable to fully merge the remote traj database {trajdb_path}')
+                    log.warning(f'unable to fully merge the remote traj database {trajdb_path}, will try again later')
                 
             i = 0
             remote_trajdir = os.path.join(node.dirpath, 'files', 'trajectories')
@@ -1686,8 +1691,8 @@ class RMSDataHandle(object):
                         targ_path = os.path.join(self.output_dir, 'trajectories', traj[:4], traj[:6], traj[:8], traj)
                         src_path = os.path.join(remote_trajdir, traj)
                         for src_name in os.listdir(src_path):
-                            src_name = os.path.join(src_path, src_name)
-                            if not os.path.isfile(src_name):
+                            full_src_name = os.path.join(src_path, src_name)
+                            if not os.path.isfile(full_src_name):
                                 log.warning(f'{src_name} missing')
                             else:
                                 if '.pickle' in src_name:
@@ -1701,8 +1706,7 @@ class RMSDataHandle(object):
                                         log.info(f'removing {pre_path}')
                                         if os.path.isdir(pre_path):
                                             shutil.rmtree(pre_path, ignore_errors=True)
-                                os.makedirs(targ_path, exist_ok=True)
-                                shutil.copy(src_name, targ_path)
+                                safeCopyOrMove(src_name, src_path, targ_path)
                         try:
                             shutil.rmtree(src_path,ignore_errors=False)
                         except Exception:
@@ -1712,42 +1716,39 @@ class RMSDataHandle(object):
 
             # if the node was in mode 1 then move any uploaded phase1 solutions
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1')
-            if os.path.isdir(remote_ph1dir) and node.mode==1:
+            if os.path.isdir(remote_ph1dir) and node.mode==MCMODE_PHASE1:
                 log.info(f'checking for uploaded phase1 in {remote_ph1dir}')
                 os.makedirs(self.phase1_dir, exist_ok=True)
                 i = 0
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
-                    full_name = os.path.join(remote_ph1dir, fil)
-                    shutil.copy(full_name, self.phase1_dir)
-                    os.remove(full_name)
+                    safeCopyOrMove(fil, remote_ph1dir, self.phase1_dir, move=True)
 
                 if i > 0:
                     log.info(f'moved {i+1} new phase 1 solutions from {node.nodename}')
             
             # if the node was in mode 1 then move any uploaded processed candidates
+            # no need to use a temporary name here as we don't read from 'processed'
             remote_canddir = os.path.join(node.dirpath, 'files', 'candidates', 'processed')
-            if os.path.isdir(remote_canddir) and node.mode==1:
+            if os.path.isdir(remote_canddir) and node.mode==MCMODE_PHASE1:
                 log.info(f'checking for processed candidates in {remote_canddir}')
                 i = 0
                 targ_dir = os.path.join(self.candidate_dir, 'processed')
                 for i, fil in enumerate([x for x in os.listdir(remote_canddir) if '.pickle' in x]):
-                    full_name = os.path.join(remote_canddir, fil)
-                    os.replace(full_name, targ_dir)
+                    safeCopyOrMove(fil, remote_canddir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
                 if i > 0:
                     log.info(f'moved {i+1} processed candidates from {node.nodename}')
             
             # if the node was in mode 2 then move any processed phase1 solutions
+            # no need to use a temporary name here as we don't read from 'processed'
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1', 'processed')
-            if os.path.isdir(remote_ph1dir) and node.mode==2:
+            if os.path.isdir(remote_ph1dir) and node.mode==MCMODE_PHASE2:
                 log.info(f'checking for processed phase1 in {remote_ph1dir}')
                 targ_dir = os.path.join(self.phase1_dir, 'processed')
                 os.makedirs(targ_dir, exist_ok=True)
                 i = 0
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
-                    full_name = os.path.join(remote_ph1dir, fil)
-                    shutil.copy(full_name, targ_dir)
-                    os.remove(full_name)
+                    safeCopyOrMove(fil, remote_ph1dir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
                 if i > 0:
                     log.info(f'moved {i+1} processed phase 1 solutions from {node.nodename}')
@@ -1779,14 +1780,15 @@ class RMSDataHandle(object):
                 if len(files_to_move) > 0: 
                     log.info(f'{node.nodename} stopfile has appeared, moving candidates')
                     for full_name in files_to_move:
-                        shutil.copy(full_name, self.candidate_dir)
-                        os.remove(full_name)
+                        src_path, src_name = os.path.split(full_name)
+                        safeCopyOrMove(src_name, src_path, self.candidate_dir, move=True)
+
                 files_to_move = glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle'))
                 if len(files_to_move) > 0: 
                     log.info(f'{node.nodename} stopfile has appeared, moving phase1 files')
                     for full_name in files_to_move:
-                        shutil.copy(full_name, self.phase1_dir)
-                        os.remove(full_name) 
+                        src_path, src_name = os.path.split(full_name)
+                        safeCopyOrMove(src_name, src_path, self.phase1_dir, move=True)
             else:
                 # if the stop file isn't present and the nodes are idle, give them something to do
 
@@ -1799,8 +1801,9 @@ class RMSDataHandle(object):
                     max_capacity = node.capacity if node.capacity >= 0 else 1000
                     for i, full_name in enumerate(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))):
                         log.info(f'moving {full_name} to {node.nodename}')
-                        shutil.copy(full_name, targ_dir)
-                        os.remove(full_name) 
+
+                        src_path, src_name = os.path.split(full_name)
+                        safeCopyOrMove(src_name, src_path, targ_dir, move=True)
                         i +=1 
                         if i >= max_capacity:
                             break
@@ -1814,8 +1817,8 @@ class RMSDataHandle(object):
                     max_capacity = node.capacity if node.capacity >= 0 else 5000
                     for i, full_name in enumerate(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))):
                         log.info(f'moving {full_name} to {node.nodename}')
-                        shutil.copy(full_name, targ_dir)
-                        os.remove(full_name) 
+                        src_path, src_name = os.path.split(full_name)
+                        safeCopyOrMove(src_name, src_path, targ_dir, move=True)
                         i +=1 
                         if i >= max_capacity:
                             break
@@ -1826,12 +1829,13 @@ class RMSDataHandle(object):
             log.info(f'moving any stale data assigned to {node.nodename}')
             for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'candidates', '*.pickle')):
                 if os.stat(full_name).st_mtime < refdt:
-                    shutil.copy(full_name, self.candidate_dir)
-                    os.remove(full_name)
+                    src_path, src_name = os.path.split(full_name)
+                    safeCopyOrMove(src_name, src_path, self.candidate_dir, move=True)
+
             for full_name in glob.glob(os.path.join(node.dirpath, 'files', 'phase1', '*.pickle')):
                 if os.stat(full_name).st_mtime < refdt:
-                    shutil.copy(full_name, self.phase1_dir)
-                    os.remove(full_name)         
+                    src_path, src_name = os.path.split(full_name)
+                    safeCopyOrMove(src_name, src_path, self.phase1_dir, move=True)
 
         return 
 
