@@ -31,6 +31,8 @@ def savePickle(obj, dir_path, file_name):
     tmp_name = file_name.replace('.p', '_x')
     with open(os.path.join(dir_path, tmp_name), 'wb') as f:
         pickle.dump(obj, f, protocol=2)
+    if os.path.isfile(os.path.join(dir_path,file_name)):
+        os.remove(os.path.join(dir_path,file_name))
     os.rename(os.path.join(dir_path,tmp_name), os.path.join(dir_path,file_name))
 
 

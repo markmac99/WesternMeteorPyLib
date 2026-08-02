@@ -29,6 +29,8 @@ def safeCopyOrMove(src_name, src_path, targ_path, targ_name=None, move=False):
     tmp_name = os.path.join(targ_path, f'{src_name.replace(".", "_")}.{str(uuid.uuid4())}')
     try:
         shutil.copyfile(full_src_name, tmp_name)
+        if os.path.isfile(full_targ_name):
+            os.remove(full_targ_name)
         os.rename(tmp_name, full_targ_name)
         if move:
             os.remove(full_src_name)
