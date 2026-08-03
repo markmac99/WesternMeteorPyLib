@@ -63,7 +63,7 @@ class ObservationsDatabase():
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name)
+        con = sqlite3.connect(db_full_name, timeout=20)
         self.dbhandle = con
         con.execute('pragma journal_mode=wal')
         if purge_records:
@@ -334,7 +334,8 @@ class TrajectoryDatabase():
         self.db_name = db_name
         db_full_name = os.path.join(db_path, f'{db_name}')
         log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name)
+        con = sqlite3.connect(db_full_name, timeout=20)
+        con.execute('pragma journal_mode=wal')
         if purge_records:
             con.execute('drop table if exists trajectories')
             con.execute('drop table if exists failed_trajectories')
@@ -828,7 +829,7 @@ class CandidateDatabase():
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name)
+        con = sqlite3.connect(db_full_name, timeout=20)
         con.execute('pragma journal_mode=wal')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='candidates'")
         if res.fetchone() is None:
