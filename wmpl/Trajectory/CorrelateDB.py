@@ -626,6 +626,55 @@ class TrajectoryDatabase():
                 'obs_ids':json.loads(rw[3]), 'ign_obs_ids':json.loads(rw[4])})
         return trajs
 
+    def isBeingProcessed(self, traj_id, clear=False):
+        """
+        Check if a trajectory is already being processed
+
+        Parameters:
+        traj_id:    [string] the trajectory ID
+
+        Returns
+        Bool - True if the traj is found and has != 1 , False otherwise 
+        (nb: returns true for logically deleted cands, this is deliberate)
+
+        """
+        try:
+            if not clear:
+                chk = self.dbhandle.execute('select traj_id from trajectories WHERE traj_id=? and status<>1', (traj_id,)).fetchall()
+            else:
+                chk = self.dbhandle.execute('select traj_id from trajectories WHERE traj_id=? and status=1', (traj_id,)).fetchall()
+            if len(chk) == 0:
+                return False
+            return True
+        except Exception as e:
+            log.warning(f'problem checking if {traj_id} is already being processed')
+            return False
+        return False
+
+    def markBeingProcessed(self, traj_id, clear=False):
+        """
+        Mark or unmark a trajectory as being processed.
+         
+        Parameters:
+        traj_id:    [string] trajectory ID
+        clear:      [bool] clear the 'being processed' marker instead of setting it. Default false
+
+        Returns
+        Bool -  True if the trajetory is found and was then marked being processed
+                False if there was an error
+        """
+        try:
+            statuscode = 1 if clear else 2
+            self.dbhandle.execute('update trajectories set status=? WHERE traj_id=?', (statuscode, traj_id,))
+            self.dbhandle.commit()
+            return self.isBeingProcessed(traj_id, clear)
+        except Exception as e:
+            log.warning(f'problem marking {traj_id} as being processed')
+            return False
+
+    def unmarkBeingProcessed(self, traj_id):
+        return self.markBeingProcessed(traj_id, clear=True)
+
     def archiveTrajDatabase(self, db_path, arch_prefix, archdate_jd):
         """
         archive records older than archdate_jd to a database {arch_prefix}_trajectories.db
@@ -861,6 +910,58 @@ class CandidateDatabase():
         if verbose:
             log.info(f'{cand_id} contains {obs_ids}')
         return obs_ids
+
+    def isBeingProcessed(self, cand_id:str, clear=False):
+        """
+        Check if a candidate is already being processed
+
+        Parameters:
+        cand_id:    [string] either a pickle name or the candidate id
+
+        Returns
+        Bool - True if the candidate is found and has != 1 , False otherwise 
+        (nb: returns true for logically deleted cands, this is deliberate)
+
+        """
+        if cand_id.endswith('.pickle'):
+            cand_id = os.path.splitext(cand_id)[0]
+        try:
+            if not clear:
+                chk = self.dbhandle.execute('select cand_id from candidates WHERE cand_id=? and status<>1', (cand_id,)).fetchall()
+            else:
+                chk = self.dbhandle.execute('select cand_id from candidates WHERE cand_id=? and status=1', (cand_id,)).fetchall()
+            if len(chk) == 0:
+                return False
+            return True
+        except Exception as e:
+            log.warning(f'problem checking if {cand_id} is already being processed')
+            return False
+
+    def markBeingProcessed(self, cand_id:str, clear=False):
+        """
+        Mark or unmark a candidate as being processed.
+         
+        Parameters:
+        cand_id:    [string] either a pickle name or the candidate id
+        clear:      [bool] clear the 'being processed' marker instead of setting it. Default false
+
+        Returns
+        Bool -  True if the candidate is found and was then marked being processed
+                False if there was an error
+        """
+        if cand_id.endswith('.pickle'):
+            cand_id = os.path.splitext(cand_id)[0]
+        try:
+            statuscode = 1 if clear else 2
+            self.dbhandle.execute('update candidates set status=? WHERE cand_id=?', (statuscode, cand_id,))
+            self.dbhandle.commit()
+            return self.isBeingProcessed(cand_id, clear)
+        except Exception as e:
+            log.warning(f'problem marking {cand_id} as being processed')
+            return False
+
+    def unmarkBeingProcessed(self, cand_id:str):
+        return self.markBeingProcessed(cand_id, clear=True)
 
     def purgeCandDatabase(self, archdate_jd=None):
         """

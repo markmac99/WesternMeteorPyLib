@@ -1735,6 +1735,7 @@ class TrajectoryCorrelator(object):
 
                         log.info(f"Trajectory at {ref_dt.isoformat()} skipped and added to fails!")
                         self.dh.addTrajectory(failed_traj, failed_traj.jdt_ref, verbose=verbose)
+                        self.dh.markCandAsProcessed(cand_id)
                         continue
 
 
@@ -1805,10 +1806,12 @@ class TrajectoryCorrelator(object):
                     #   new observations are added
                     if self.dh.checkTrajIfFailed(traj):
                         log.info("The same trajectory already failed to be computed in previous runs!")
+                        self.dh.markCandAsProcessed(cand_id)
                         continue
 
                     # pass in matched_observations here so that we can mark them paired if they're used
                     result = self.solveTrajectory(traj, mc_runs, mcmode=mcmode, matched_obs=matched_observations, verbose=verbose)
+                    self.dh.markCandAsProcessed(cand_id)
                     traj_solved_count += int(result)
 
                     # end of if mcmode != MCMODE_PHASE2
@@ -1840,6 +1843,7 @@ class TrajectoryCorrelator(object):
                     # pass in matched_observations here so that we can mark them unpaired if the solver fails
                     result = self.solveTrajectory(traj, mc_runs, mcmode=mcmode, matched_obs=matched_observations, orig_traj=traj, verbose=verbose)
                     traj_solved_count += int(result)
+                    self.dh.markTrajAsProcessed(traj)
 
             # end of "for matched_observations in candidate_trajectories"
             outcomes = [traj_solved_count]

@@ -511,7 +511,7 @@ class RMSDataHandle(object):
 
         else:
             # in phase 2, initialise and collect data first as we need the phase1 traj on disk already
-            self.trajectory_db = None
+            self.trajectory_db = TrajectoryDatabase(db_dir)
             self.observations_db = None
             self.initialiseRemoteDataHandling()
 
@@ -520,8 +520,9 @@ class RMSDataHandle(object):
             self.dt_range=[dt_beg, dt_end]
 
         self.candidate_db = None
-        if mcmode == MCMODE_CANDS:
-            self.candidate_db = CandidateDatabase(db_dir, keep=daysback)
+        if mcmode == MCMODE_CANDS or mcmode == MCMODE_PHASE1:
+            daystokeep = daysback if mcmode == MCMODE_CANDS else 999
+            self.candidate_db = CandidateDatabase(db_dir, keep=daystokeep)
         
 
         ### Define country groups to speed up the proceessing ###
@@ -1579,6 +1580,10 @@ class RMSDataHandle(object):
                 traj = loadPickle(self.phase1_dir, pick)
                 if not isinstance(traj, Trajectory):
                     continue
+
+                if self.trajectory_db.isBeingProcessed(traj.traj_id):
+                    continue
+
                 traj_dir = self.generateTrajOutputDirectoryPath(traj, make_dirs=False)
                 # Add the filepath if not present so we can remove updated trajectories
                 if not hasattr(traj, 'traj_file_path'):
@@ -1597,16 +1602,13 @@ class RMSDataHandle(object):
                 if not hasattr(traj, 'fixed_time_offsets'):
                     traj.fixed_time_offsets = {}
 
-                # now we've loaded the phase 1 solution, move it to prevent reprocessing
-                procfile = os.path.join(self.phase1_dir, 'processed', pick)
-                ## FIXME do i really want to move them before processing has completed
-                os.replace(os.path.join(self.phase1_dir, pick), procfile)
-
+                self.trajectory_db.markBeingProcessed(traj.traj_id)
                 self.phase1Trajectories.append(traj)
                 log.info(f'loaded {traj.traj_id}')
-            except Exception:
+            except Exception as e:
                 # if the file couldn't be read, then skip it for now - we'll get it in the next pass
                 log.info(f'File {pick} skipped for now')
+                log.info(e)
         return dt_beg, dt_end
 
     def loadCandidates(self, verbose=False):
@@ -1616,23 +1618,19 @@ class RMSDataHandle(object):
         """
         candidate_trajectories = []
         save_path = self.candidate_dir
-        procpath = os.path.join(save_path, 'processed')  
-        os.makedirs(procpath, exist_ok=True)
         
         for fil in os.listdir(save_path)[:self.max_trajs]:
             if '.pickle' not in fil: 
+                continue
+            if self.candidate_db.isBeingProcessed(fil):
                 continue
             try:
                 loadedpickle = loadPickle(save_path, fil)
                 if isinstance(loadedpickle, list):
                     candidate_trajectories.append(loadedpickle)
+                    self.candidate_db.markBeingProcessed(fil)
                 else:
                     log.info(f'malformed candidate {fil}')
-                # now move the loaded file so we don't try to reprocess it 
-                full_name = os.path.join(save_path, fil)
-                procfile = os.path.join(procpath, fil)
-                # FIXME again do i want to do this before i have processed it
-                os.replace(full_name, procfile)
 
             except Exception: 
                 log.info(f'Candidate {fil} went away, probably picked up by another process')
@@ -1641,7 +1639,27 @@ class RMSDataHandle(object):
         log.info("-----------------------")
 
         return candidate_trajectories
+
+    def markCandAsProcessed(self, cand_id):
+        """
+        Clear the being-processed flag and move the candidate to the processed/ folder
+        """
+        pickle_name = f'{cand_id}.pickle'
+        targ_dir = os.path.join(self.candidate_dir, 'processed')  
+        safeCopyOrMove(pickle_name, self.candidate_dir, targ_dir, move=True)
+        if self.candidate_db:
+            self.candidate_db.unmarkBeingProcessed(cand_id)
    
+    def markTrajAsProcessed(self, traj):
+        """
+        Clear the being-processed flag and move the trajectory to the processed/ folder
+        """
+        pickle_name = f'{traj.longname}_trajectory.pickle'
+        targ_dir = os.path.join(self.phase1_dir, 'processed')  
+        safeCopyOrMove(pickle_name, self.phase1_dir, targ_dir, move=True)
+        if self.trajectory_db:
+            self.trajectory_db.unmarkBeingProcessed(traj.traj_id)
+
     def moveUploadedData(self, verbose=False):
         """
         Used in 'parent' mode: this moves uploaded data to the target locations on the server

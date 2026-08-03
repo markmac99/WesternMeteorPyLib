@@ -72,6 +72,24 @@ def test_CandDb():
     obslist = cdb.getCandidateObs('potato_123')
     assert len(obslist) == 0
 
+    # tests for setting, unsetting and checking the cand's processing status
+    real_cand_ids = ['1784502166.566642_UK', '1784499242.627764_UK.pickle']
+    for real_cand_id in real_cand_ids:
+        assert cdb.isBeingProcessed(real_cand_id) is False
+        
+        res = cdb.markBeingProcessed(real_cand_id)
+        assert cdb.isBeingProcessed(real_cand_id) is True
+
+        res = cdb.unmarkBeingProcessed(real_cand_id)
+        assert  cdb.isBeingProcessed(real_cand_id) is False
+
+    # also test with nonsense ID
+    bad_cand_id = r"foo#'%4$#111"
+
+    assert cdb.isBeingProcessed(bad_cand_id) is False
+    assert cdb.markBeingProcessed(bad_cand_id) is False
+    assert cdb.unmarkBeingProcessed(bad_cand_id) is False
+
     cdb.closeCandDatabase()
 
 
@@ -199,6 +217,30 @@ def test_getTrajectories():
     assert len(trajs) == 0
     trajs = trajdb.getTrajectories('.',["1;drop table foo", None], failed=False, inc_deleted=False, verbose=False)
     assert len(trajs) == 0
+
+    trajdb.closeTrajDatabase()
+
+def test_ProcessingFlags():
+
+    trajdb = TrajectoryDatabase(dbloc, 'test_traj.db')
+    reset_trajdb(trajdb)
+
+    # tests for setting, unsetting and checking the cand's processing status
+    real_traj_id  = '20260719003629_16xBY'
+    assert trajdb.isBeingProcessed(real_traj_id) is False
+    
+    res = trajdb.markBeingProcessed(real_traj_id)
+    assert trajdb.isBeingProcessed(real_traj_id) is True
+
+    res = trajdb.unmarkBeingProcessed(real_traj_id)
+    assert  trajdb.isBeingProcessed(real_traj_id) is False
+
+    # also test with nonsense ID
+    bad_cand_id = r"foo#'%4$#111"
+
+    assert trajdb.isBeingProcessed(bad_cand_id) is False
+    assert trajdb.markBeingProcessed(bad_cand_id) is False
+    assert trajdb.unmarkBeingProcessed(bad_cand_id) is False
 
     trajdb.closeTrajDatabase()
 
