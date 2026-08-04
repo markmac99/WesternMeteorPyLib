@@ -1710,10 +1710,12 @@ class RMSDataHandle(object):
                         src_path = os.path.join(remote_trajdir, traj)
                         for src_name in os.listdir(src_path):
                             full_src_name = os.path.join(src_path, src_name)
+                            if 'filepart' in src_name:
+                                continue
                             if not os.path.isfile(full_src_name):
                                 log.warning(f'{src_name} missing')
                             else:
-                                if '.pickle' in src_name:
+                                if src_name.endswith('.pickle'):
                                     log.info(f'moving {src_name} to {targ_path}')
                                     traj = loadPickle(src_path, src_name)
                                     if hasattr(traj, 'pre_mc_longname') and traj.pre_mc_longname != traj.longname:
@@ -1740,7 +1742,9 @@ class RMSDataHandle(object):
                 log.info(f'checking for uploaded phase1 in {remote_ph1dir}')
                 os.makedirs(self.phase1_dir, exist_ok=True)
                 i = 0
-                for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
+                for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if x.endswith('.pickle')]):
+                    if 'filepart' in src_name:
+                        continue
                     safeCopyOrMove(fil, remote_ph1dir, self.phase1_dir, move=True)
 
                 if i > 0:
@@ -1752,7 +1756,9 @@ class RMSDataHandle(object):
                 log.info(f'checking for processed candidates in {remote_canddir}')
                 i = 0
                 targ_dir = os.path.join(self.candidate_dir, 'processed')
-                for i, fil in enumerate([x for x in os.listdir(remote_canddir) if '.pickle' in x]):
+                for i, fil in enumerate([x for x in os.listdir(remote_canddir) if x.endswith('.pickle')]):
+                    if 'filepart' in src_name:
+                        continue
                     safeCopyOrMove(fil, remote_canddir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
                 if i > 0:
@@ -1765,7 +1771,9 @@ class RMSDataHandle(object):
                 targ_dir = os.path.join(self.phase1_dir, 'processed')
                 os.makedirs(targ_dir, exist_ok=True)
                 i = 0
-                for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if '.pickle' in x]):
+                for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if x.endswith('.pickle')]):
+                    if 'filepart' in src_name:
+                        continue
                     safeCopyOrMove(fil, remote_ph1dir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
                 if i > 0:
