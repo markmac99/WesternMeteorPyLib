@@ -1733,6 +1733,8 @@ class RMSDataHandle(object):
                 log.info(f'moved {i+1} trajectories')
 
             # if the node was in mode 1 then move any uploaded phase1 solutions
+            # FIXME: these should also be distributed to any phase2 nodes that are running
+            # though checkAndRestribCands will move data to any idle nodes. 
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1')
             if os.path.isdir(remote_ph1dir) and node.mode==MCMODE_PHASE1:
                 log.info(f'checking for uploaded phase1 in {remote_ph1dir}')
@@ -1745,7 +1747,6 @@ class RMSDataHandle(object):
                     log.info(f'moved {i+1} new phase 1 solutions from {node.nodename}')
             
             # if the node was in mode 1 then move any uploaded processed candidates
-            # no need to use a temporary name here as we don't read from 'processed'
             remote_canddir = os.path.join(node.dirpath, 'files', 'candidates', 'processed')
             if os.path.isdir(remote_canddir) and node.mode==MCMODE_PHASE1:
                 log.info(f'checking for processed candidates in {remote_canddir}')
@@ -1758,7 +1759,6 @@ class RMSDataHandle(object):
                     log.info(f'moved {i+1} processed candidates from {node.nodename}')
             
             # if the node was in mode 2 then move any processed phase1 solutions
-            # no need to use a temporary name here as we don't read from 'processed'
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1', 'processed')
             if os.path.isdir(remote_ph1dir) and node.mode==MCMODE_PHASE2:
                 log.info(f'checking for processed phase1 in {remote_ph1dir}')
@@ -1809,7 +1809,6 @@ class RMSDataHandle(object):
                         safeCopyOrMove(src_name, src_path, self.phase1_dir, move=True)
             else:
                 # if the stop file isn't present and the nodes are idle, give them something to do
-
                 targ_dir = os.path.join(node.dirpath, 'files', 'candidates')
                 if len(glob.glob(os.path.join(targ_dir, '*.pickle'))) == 0 and node.mode == MCMODE_PHASE1 and node.capacity !=0:
                     # the node is waiting for data
@@ -1820,6 +1819,9 @@ class RMSDataHandle(object):
                     max_to_move = int(len(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))) / 2 )
                     max_capacity = min(max_capacity, max_to_move)
                     for i, full_name in enumerate(glob.glob(os.path.join(self.candidate_dir, '*.pickle'))):
+                        # only redistribute if the candidate isn't already being processed
+                        if self.candidate_db and self.candidate_db.isBeingProcessed(full_name):
+                            continue
                         log.info(f'moving {full_name} to {node.nodename}')
 
                         src_path, src_name = os.path.split(full_name)
@@ -1838,6 +1840,11 @@ class RMSDataHandle(object):
                     max_to_move = int(len(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))) / 2 )
                     max_capacity = min(max_capacity, max_to_move)
                     for i, full_name in enumerate(glob.glob(os.path.join(self.phase1_dir, '*.pickle'))):
+                        # only redistribute if the trajectory isn't already being processed
+                        if self.trajectory_db:
+                            tmp_traj = loadPickle(*os.path.split(full_name))
+                            if self.trajectory_db.isBeingProcessed(tmp_traj.traj_id):
+                                continue
                         log.info(f'moving {full_name} to {node.nodename}')
                         src_path, src_name = os.path.split(full_name)
                         safeCopyOrMove(src_name, src_path, targ_dir, move=True)

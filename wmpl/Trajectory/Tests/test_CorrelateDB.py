@@ -82,14 +82,14 @@ def test_CandDb():
     assert len(obslist) == 0
 
     # tests for setting, unsetting and checking the cand's processing status
-    real_cand_ids = ['1784502166.566642_UK', '1784499242.627764_UK.pickle']
+    real_cand_ids = ['1784502166.566642_UK', '1784499242.627764_UK.pickle', '/tmp/candidates/1784499242.627764_UK.pickle']
     for real_cand_id in real_cand_ids:
         assert cdb.isBeingProcessed(real_cand_id) is False
         
-        res = cdb.markBeingProcessed(real_cand_id)
+        assert cdb.markBeingProcessed(real_cand_id)
         assert cdb.isBeingProcessed(real_cand_id) is True
 
-        res = cdb.unmarkBeingProcessed(real_cand_id)
+        assert cdb.unmarkBeingProcessed(real_cand_id)
         assert  cdb.isBeingProcessed(real_cand_id) is False
 
     # also test with nonsense ID

@@ -1044,6 +1044,7 @@ class CandidateDatabase():
 
         """
         if cand_id.endswith('.pickle'):
+            cand_id = os.path.split(cand_id)[1]
             cand_id = os.path.splitext(cand_id)[0]
         try:
             if not clear:
@@ -1070,6 +1071,7 @@ class CandidateDatabase():
                 False if there was an error
         """
         if cand_id.endswith('.pickle'):
+            cand_id = os.path.split(cand_id)[1]
             cand_id = os.path.splitext(cand_id)[0]
         statuscode = 1 if clear else 2
         for retry in range(10):
