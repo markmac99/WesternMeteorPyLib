@@ -1776,7 +1776,7 @@ class RMSDataHandle(object):
                 os.makedirs(targ_dir, exist_ok=True)
                 i = 0
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if x.endswith('.pickle')]):
-                    if 'filepart' in src_name:
+                    if 'filepart' in fil:
                         continue
                     safeCopyOrMove(fil, remote_ph1dir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
