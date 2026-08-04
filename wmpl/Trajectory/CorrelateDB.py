@@ -755,6 +755,27 @@ class TrajectoryDatabase():
     def unmarkBeingProcessed(self, traj_id):
         return self.markBeingProcessed(traj_id, clear=True)
 
+    def clearProcessingFlag(self):
+        """
+        Clear the processing flag from trajectories by setting status=1
+        This is used at startup to ensure any trajectories left behind by a crash are picked up
+        """
+        for retry in range(10):
+            try:
+                self.dbhandle.execute('update trajectories set status=1 WHERE status=2')
+                self.dbhandle.commit()
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to reset processing flag on trajectory database, retry {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception:
+                log.warning('failed to reset processing flag on trajectory database')
+                log.warning(f'reason: {e}')
+                return False
+        # if we get to here, the retries failed
+        return False   
+
+
     def safeDetachDatabase(self, dbname):
         try:
             self.dbhandle.execute("detach database 'archdb'")
@@ -1092,6 +1113,26 @@ class CandidateDatabase():
 
     def unmarkBeingProcessed(self, cand_id:str):
         return self.markBeingProcessed(cand_id, clear=True)
+
+    def clearProcessingFlag(self):
+        """
+        Clear the processing flag from candidates by setting status=1
+        This is used at startup to ensure any candidates left behind by a crash are picked up
+        """
+        for retry in range(10):
+            try:
+                self.dbhandle.execute('update candidates set status=1 WHERE status=2')
+                self.dbhandle.commit()
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to reset processing flag on candidate database, retry {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception:
+                log.warning('failed to reset processing flag on candidate database')
+                log.warning(f'reason: {e}')
+                return False
+        # if we get to here, the retries failed
+        return False   
 
     def safeDetachDatabase(self, dbname):
         try:

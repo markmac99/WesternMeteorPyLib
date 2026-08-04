@@ -2345,6 +2345,15 @@ contain data folders. Data folders should have FTPdetectinfo files together with
             cml_args.dir_path, dt_range=event_time_range, db_dir=cml_args.dbdir, output_dir=cml_args.outdir,
             mcmode=mcmode, max_trajs=max_trajs, verbose=verbose, archivemonths=cml_args.archivemonths, auto=cml_args.auto,
             max_toffset=cml_args.maxtoffset)
+
+        # on the first pass, we clear the status flags on Cands and Trajectories. This ensures that if a process
+        # crashes, any left-behind data will get picked up. We do run a small risk of double-processing, but any 
+        # successfully-processed pickles are moved to the processed folders, so the number should be small. 
+        if not previous_start_time:
+            if mcmode == MCMODE_PHASE1 and dh.candidate_db:
+                dh.candidate_db.clearProcessingFlag()
+            elif mcmode == MCMODE_PHASE2 and dh.trajectory_db:
+                dh.trajectory_db.clearProcessingFlag()
         
         # If there is nothing to process and we're in Candidate mode, stop
         if not dh.processing_list and (mcmode & MCMODE_CANDS):
