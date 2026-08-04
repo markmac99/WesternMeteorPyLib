@@ -1682,8 +1682,8 @@ class RMSDataHandle(object):
                 log.info(f"checking for uploaded obs databases in {os.path.join(node.dirpath,'files')}")
             for obsdb_path in glob.glob(os.path.join(node.dirpath,'files','observations*.db')):
                 if self.observations_db.mergeObsDatabase(obsdb_path):
-                    os.remove(obsdb_path)
                     try:
+                        os.remove(obsdb_path)
                         os.remove(f'{obsdb_path}-wal')
                         os.remove(f'{obsdb_path}-shm')
                     except Exception:
@@ -1695,9 +1695,13 @@ class RMSDataHandle(object):
                 log.info(f"checking for uploaded traj databases in {os.path.join(node.dirpath,'files')}")
             for trajdb_path in glob.glob(os.path.join(node.dirpath,'files','trajectories*.db')):
                 if self.trajectory_db.mergeTrajDatabase(trajdb_path):
-                    os.remove(trajdb_path)
-                else:
-                    log.warning(f'unable to fully merge the remote traj database {trajdb_path}, will try again later')
+                    try:
+                        os.remove(trajdb_path)
+                        os.remove(f'{trajdb_path}-wal')
+                        os.remove(f'{trajdb_path}-shm')
+                    except Exception:
+                        log.warning(f'unable to fully merge the remote traj database {trajdb_path}, will try again later')
+                        pass
                 
             i = 0
             remote_trajdir = os.path.join(node.dirpath, 'files', 'trajectories')
