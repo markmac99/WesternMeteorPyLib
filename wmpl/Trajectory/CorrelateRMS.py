@@ -1739,15 +1739,13 @@ class RMSDataHandle(object):
                 log.info(f'moved {i+1} trajectories')
 
             # if the node was in mode 1 then move any uploaded phase1 solutions
-            # FIXME: these should also be distributed to any phase2 nodes that are running
-            # though checkAndRestribCands will move data to any idle nodes. 
             remote_ph1dir = os.path.join(node.dirpath, 'files', 'phase1')
             if os.path.isdir(remote_ph1dir) and node.mode==MCMODE_PHASE1:
                 log.info(f'checking for uploaded phase1 in {remote_ph1dir}')
                 os.makedirs(self.phase1_dir, exist_ok=True)
                 i = 0
                 for i, fil in enumerate([x for x in os.listdir(remote_ph1dir) if x.endswith('.pickle')]):
-                    if 'filepart' in src_name:
+                    if 'filepart' in fil:
                         continue
                     safeCopyOrMove(fil, remote_ph1dir, self.phase1_dir, move=True)
 
@@ -1761,7 +1759,7 @@ class RMSDataHandle(object):
                 i = 0
                 targ_dir = os.path.join(self.candidate_dir, 'processed')
                 for i, fil in enumerate([x for x in os.listdir(remote_canddir) if x.endswith('.pickle')]):
-                    if 'filepart' in src_name:
+                    if 'filepart' in fil:
                         continue
                     safeCopyOrMove(fil, remote_canddir, targ_dir, targ_name=f'{fil}-{node.nodename}', move=True)
 
