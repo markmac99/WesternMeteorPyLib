@@ -34,4 +34,5 @@ wmpl/Trajectory/Tests/correlator/phase1/
 wmpl/Trajectory/Tests/correlator/trajectories/
 wmpl/Trajectory/Tests/correlator/candidates/
 wmpl/Trajectory/Tests/correlator/*.log
-wmpl/Trajectory/Tests/correlator/*.db
+wmpl/Trajectory/Tests/**/*.db
+wmpl/Trajectory/Tests/**/*.pickle
