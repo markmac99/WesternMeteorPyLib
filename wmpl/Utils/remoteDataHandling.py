@@ -363,6 +363,8 @@ class RemoteDataHandler():
 
             if i > 0:
                 log.info(f'uploaded {i} phase1 solutions')
+            if not success_flag:
+                log.info('some files didnt upload, will retry on next loop')
 
         # now upload any data in the 'trajectories' folder, flattening it to make it simpler to handle
         i=0
@@ -402,6 +404,7 @@ class RemoteDataHandler():
                     if traj_success_flag: 
                         shutil.rmtree(dirpath, ignore_errors=True)
                     else: 
+                        log.info('some files didnt upload, will retry on next loop')
                         success_flag = traj_success_flag
 
             
