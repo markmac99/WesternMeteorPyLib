@@ -32,6 +32,7 @@ import datetime
 import json
 import numpy as np
 import copy
+from time import sleep
 
 from wmpl.Utils.TrajConversions import datetime2JD, jd2Date
 
@@ -63,7 +64,7 @@ class ObservationsDatabase():
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name, timeout=20)
+        con = sqlite3.connect(db_full_name)
         self.dbhandle = con
         con.execute('pragma journal_mode=wal')
         if purge_records:
@@ -136,15 +137,21 @@ class ObservationsDatabase():
 
         if verbose:
             log.info(f'adding {obs_ids} to paired_obs table')
-        try:
-            self.dbhandle.executemany('insert or replace into paired_obs values(:obs_id, :jdt_ref, :status)', vals)
-            self.dbhandle.commit()
-            return True
-        except Exception as e:
-            log.warning(f'failed to add {obs_ids} to paired_obs table')
-            log.warning(vals)
-            log.warning(e)
-            return False            
+        for retry in range(10):
+            try:
+                self.dbhandle.executemany('insert or replace into paired_obs values(:obs_id, :jdt_ref, :status)', vals)
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed add paired_obs  {vals}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning('unable to insert paired ops')
+                log.warning(e)
+                return False
+        # if we get this far, the retries failed but no other error occured
+        return  False
 
 
     def unpairObs(self, obs_ids, verbose=False):
@@ -164,13 +171,21 @@ class ObservationsDatabase():
 
         if verbose:
             log.info(f'unpairing {obs_ids}')
-        try:
-            self.dbhandle.execute(f'update paired_obs set status = 0 where obs_id in ({qmarks[:-1]})', obs_ids)
-            self.dbhandle.commit()
-            return True
-        except Exception:
-            log.warning(f'failed to unpair {obs_ids}')
-            return False   
+        for retry in range(10):
+            try:
+                self.dbhandle.execute(f'update paired_obs set status = 0 where obs_id in ({qmarks[:-1]})', obs_ids)
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to update {obs_ids} in database, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to unpair {obs_ids}')
+                log.warning(f'reason: {e}')
+                return False
+        # if we get to here, the retries failed
+        return False   
 
     def getLinkedObservations(self, jdt_ref):
         """
@@ -182,6 +197,12 @@ class ObservationsDatabase():
         """
         cur = self.dbhandle.execute(f"SELECT obs_id FROM paired_obs WHERE obs_dt=? and status=1", (round(jdt_ref,10),))
         return [x[0] for x in cur.fetchall()]
+
+    def safeDetachDatabase(self, dbname):
+        try:
+            self.dbhandle.execute(f"detach database '{dbname}'")
+        except Exception:
+            pass
 
     def archiveObsDatabase(self, db_path, arch_prefix, archdate_jd):
         """
@@ -199,24 +220,41 @@ class ObservationsDatabase():
 
         purge_ok = True
         log.info(f'{"Archiving" if arch_prefix else "Purging"} observations database')
-        if arch_prefix:
-            # create the database if it doesnt exist
-            archdb_name = f'{arch_prefix}_observations.db'
-            archdb = ObservationsDatabase(db_path, archdb_name)
-            archdb.closeObsDatabase()
 
-            # attach the arch db, copy the records then delete them
-            archdb_fullname = os.path.join(db_path, f'{archdb_name}')
-            self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+        # create the database if it doesnt exist
+
+        for retry in range(10):
             try:
-                self.dbhandle.execute('insert or replace into archdb.paired_obs select * from paired_obs where obs_dt < ?', (archdate_jd,))
-            except Exception:
+                if arch_prefix:
+                    # open and close to create it if needed, then attach, copy records and delete from original db
+                    archdb_name = f'{arch_prefix}_observations.db'
+                    archdb = ObservationsDatabase(db_path, archdb_name)
+                    archdb.closeObsDatabase()
+                    archdb_fullname = os.path.join(db_path, f'{archdb_name}')
+                    self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+                    # check the table exists before trying to copy from it
+                    res = self.dbhandle.execute("SELECT count(name) FROM archdb.sqlite_master WHERE name='paired_obs'").fetchall()
+                    if res[0][0] > 0:
+                        self.dbhandle.execute('insert or replace into archdb.paired_obs select * from paired_obs where obs_dt < ?', (archdate_jd,))
+                    self.dbhandle.commit()
+                    self.dbhandle.execute("detach database 'archdb'")
+                return self.purgeObsDatabase(archdate_jd=archdate_jd) 
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to archive observations, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                sleep(1)
+            except Exception as e:
                 log.warning('unable to archive observations database')
-                purge_ok = False
-            self.dbhandle.execute("detach database 'archdb'")
-        if purge_ok:
-            self.purgeObsDatabase(archdate_jd=archdate_jd) 
-        return 
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                return False
+        # if we got this far, the retries failed or 
+        self.dbhandle.commit()
+        self.safeDetachDatabase('archdb')
+        return  False
 
     def purgeObsDatabase(self, archdate_jd=None):
         """
@@ -230,13 +268,23 @@ class ObservationsDatabase():
             archdate = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=21)
             archdate_jd = datetime2JD(archdate)
 
-        cur = self.dbhandle.execute('select count(*) from paired_obs where obs_dt < ?', (archdate_jd,))
-        res = cur.fetchone()
-        count = res[0] if res else 0
-        log.info(f'  purging {count} records from paired_obs')
-        self.dbhandle.execute('delete from paired_obs where obs_dt < ?', (archdate_jd,))
-        self.dbhandle.commit()
-        return 
+        for retry in range(10):
+            try:
+                res = self.dbhandle.execute('select count(*) from paired_obs where obs_dt < ?', (archdate_jd,)).fetchall()
+                log.info(f'  purging {res[0][0]} records from paired_obs')
+                self.dbhandle.execute('delete from paired_obs where obs_dt < ?', (archdate_jd,))
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to purge observations database, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to purge observations database')
+                log.warning(f'reason: {e}')
+                return False
+        # if we got this far, the retries failed
+        return  False
 
     def copyObsJsonRecords(self, paired_obs, dt_range):
         """ 
@@ -286,31 +334,36 @@ class ObservationsDatabase():
 
         if not os.path.isfile(source_db_path):
             log.warning(f'source database missing: {source_db_path}')
-            return 
-        # attach the other db, copy the records then detach it
-        try:
-            self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
-        except Exception:
-            log.warning(f'unable to attach {source_db_path} - file may be corrupt')
-            # return true because if the file is corrupt we need to skip it
-            return True
+            return False
 
-        res = self.dbhandle.execute("SELECT name FROM sourcedb.sqlite_master WHERE name='paired_obs'")
-        if res.fetchone() is None:
-            # table is missing so nothing to do
-            status = True
-        else:
+        for retry in range(10):
             try:
-                self.dbhandle.execute('insert or replace into paired_obs select * from sourcedb.paired_obs')
-                status = True
+                self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+                rws = self.dbhandle.execute("SELECT count(name) FROM sourcedb.sqlite_master WHERE name='paired_obs'").fetchall()
+                if rws[0][0] == 0:
+                    # table is missing so nothing to do
+                    log.info(f'  no records in {source_db_path} to merge')
+                else:
+                    self.dbhandle.execute('insert or replace into paired_obs select * from sourcedb.paired_obs')
+                self.dbhandle.commit()
+                self.dbhandle.execute("detach database 'sourcedb'")
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to merge paired_obs from {source_db_path}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
             except Exception as e:
-                log.info(f'unable to merge child observations from {source_db_path}')
-                log.info(e)
-                status = False
-
+                log.warning('unable to archive observations database')
+                log.warning(e)
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
+                return False
+        # if we got this far, the retries failed
         self.dbhandle.commit()
-        self.dbhandle.execute("detach database 'sourcedb'")
-        return status
+        self.safeDetachDatabase('sourcedb')
+        return  False
 
 
 ############################################################
@@ -334,7 +387,8 @@ class TrajectoryDatabase():
         self.db_name = db_name
         db_full_name = os.path.join(db_path, f'{db_name}')
         log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name, timeout=20)
+        con = sqlite3.connect(db_full_name)
+        # use write-ahead logging to allow writer and concurrent multiple readers
         con.execute('pragma journal_mode=wal')
         if purge_records:
             con.execute('drop table if exists trajectories')
@@ -396,12 +450,16 @@ class TrajectoryDatabase():
     def _commitTrajDatabase(self, verbose=False):
         """
         commit the traj db. 
-        This function exists so we can do lazy writes in some cases
+        This function exists so we can do lazy writes 
         """
 
         if verbose:
             log.info('commit trajdb')
         self.dbhandle.commit()
+        try:
+            self.dbhandle.execute('pragma wal_checkpoint(TRUNCATE)')
+        except Exception:
+            self.dbhandle.execute('pragma wal_checkpoint(PASSIVE)')
         return 
 
     def closeTrajDatabase(self, verbose=False):
@@ -465,9 +523,8 @@ class TrajectoryDatabase():
 
         # if force_add is false, don't replace any existing entry
         if not force_add and hasattr(traj_reduced, 'traj_id') and traj_reduced.traj_id is not None:
-            res = self.dbhandle.execute(f'select traj_id from {tblname} where status=1 and traj_id=?', (traj_reduced.traj_id,))
-            row = res.fetchone()
-            if row is not None and row[0] !='None':
+            rws = self.dbhandle.execute(f'select count(traj_id) from {tblname} where status=1 and traj_id=?', (traj_reduced.traj_id,)).fetchall()
+            if rws[0][0] > 0:
                 return False
             
         if verbose:
@@ -499,25 +556,32 @@ class TrajectoryDatabase():
             log.warning(e)
             return False
 
-        try:
-            if failed:
-                self.dbhandle.execute('insert or replace into failed_trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
-                                    ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
-                                    ':obs_ids,:ign_obs_ids,1)', \
-                                    vals)
-            else:
-                self.dbhandle.execute('insert or replace into trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
-                                    ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
-                                    ':v0z,:v_avg,:rbeg_jd,:rend_jd,:rbeg_lat,:rbeg_lon,:rbeg_ele,:rend_lat,:rend_lon,:rend_ele,' \
-                                    ':obs_ids,:ign_obs_ids,1)', \
-                                    vals)
+        for retry in range(10):
+            try:
+                if failed:
+                    self.dbhandle.execute('insert or replace into failed_trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
+                                        ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
+                                        ':obs_ids,:ign_obs_ids,1)', \
+                                        vals)
+                else:
+                    self.dbhandle.execute('insert or replace into trajectories values(:jdt_ref,:traj_id,:traj_file_path,:participating_stations,:ignored_stations,' \
+                                        ':radiant_eci_mini,:state_vect_mini,:phase_1_only,:v_init,:gravity_factor,' \
+                                        ':v0z,:v_avg,:rbeg_jd,:rend_jd,:rbeg_lat,:rbeg_lon,:rbeg_ele,:rend_lat,:rend_lon,:rend_ele,' \
+                                        ':obs_ids,:ign_obs_ids,1)', \
+                                        vals)
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to insert {vals["traj_id"]}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'unable to insert {vals["traj_id"]} into traj database')
+                log.warning(f'reason: {e}')
+                return False
+        # if we got this far, the retries failed
+        return  False
                 
-        except Exception as e:
-            log.warning('problem inserting trajectory')
-            log.warning(str(e))
-            return False
-        self.dbhandle.commit()
-        return True
    
     def removeTrajectoryById(self, traj_id, failed=False, verbose=False):
         """
@@ -531,15 +595,26 @@ class TrajectoryDatabase():
         if traj_id is None:
             log.info('not possible to remove if traj_id is None')
             return False
+
         if verbose:
             log.info(f'removing {traj_id}')
+
         table_name = 'failed_trajectories' if failed else 'trajectories'
-
-        self.dbhandle.execute(f"update {table_name} set status=0 where traj_id=?", (traj_id,))
-        self.dbhandle.commit()
-
-        return True
-
+        for retry in range(10):
+            try:
+                self.dbhandle.execute(f"update {table_name} set status=0 where traj_id=?", (traj_id,))
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to mark {traj_id} deleted, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to mark {traj_id} deleted')
+                log.warning(e)
+                return False
+        # if we got this far, the retries failed
+        return  False
     
     def getTrajectories(self, output_dir, jdt_range, failed=False, inc_deleted=False, verbose=False):
         """
@@ -564,11 +639,11 @@ class TrajectoryDatabase():
             log.info(f'getting trajectories between {jd2Date(jdt_start, dt_obj=True).strftime("%Y%m%d_%M%M%S.%f")} and {jd2Date(jdt_end, dt_obj=True).strftime("%Y%m%d_%M%M%S.%f")}')
 
         if not jdt_end:
-            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? {sts_test}", (jdt_start,))
+            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? {sts_test}", (jdt_start,)).fetchall()
         else:
-            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? {sts_test}", (jdt_start,jdt_end,))
+            rows = self.dbhandle.execute(f"SELECT * FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? {sts_test}", (jdt_start,jdt_end,)).fetchall()
         trajs = []
-        for rw in rows.fetchall():
+        for rw in rows:
             rw = [np.nan if x == 'NaN' else x for x in rw]   
             if failed:
                 json_dict = {'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2]),
@@ -613,14 +688,11 @@ class TrajectoryDatabase():
         jdt_start, jdt_end = jdt_range
         table_name = 'failed_trajectories' if failed else 'trajectories'
         if not jdt_start:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} where status=1 order by jdt_ref")
-            rows = cur.fetchall()
+            rows = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} where status=1 order by jdt_ref").fetchall()
         elif not jdt_end:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref=? and status=1 order by jdt_ref", (jdt_start,))
-            rows = cur.fetchall()
+            rows = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref=? and status=1 order by jdt_ref", (jdt_start,)).fetchall()
         else:
-            cur = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? and status=1 order by jdt_ref", (jdt_start, jdt_end,))
-            rows = cur.fetchall()
+            rows = self.dbhandle.execute(f"SELECT jdt_ref, traj_id, traj_file_path, obs_ids, ign_obs_ids FROM {table_name} WHERE jdt_ref>=? and jdt_ref<=? and status=1 order by jdt_ref", (jdt_start, jdt_end,)).fetchall()
         trajs = []
         for rw in rows:
             trajs.append({'jdt_ref':rw[0], 'traj_id':rw[1], 'traj_file_path':os.path.join(output_dir, rw[2]), 
@@ -632,11 +704,11 @@ class TrajectoryDatabase():
         Check if a trajectory is already being processed
 
         Parameters:
-        traj_id:    [string] the trajectory ID
+        traj_id:    [string]    the trajectory ID
+        clear:      [bool]      True if we want to check that a trajectory ISNT being processed
 
         Returns
-        Bool - True if the traj is found and has != 1 , False otherwise 
-        (nb: returns true for logically deleted cands, this is deliberate)
+        Bool - True if the traj is found and has the expected status, False otherwise 
 
         """
         try:
@@ -649,8 +721,8 @@ class TrajectoryDatabase():
             return True
         except Exception as e:
             log.warning(f'problem checking if {traj_id} is already being processed')
+            log.warning(f'reason: {e}')
             return False
-        return False
 
     def markBeingProcessed(self, traj_id, clear=False):
         """
@@ -664,17 +736,31 @@ class TrajectoryDatabase():
         Bool -  True if the trajetory is found and was then marked being processed
                 False if there was an error
         """
-        try:
-            statuscode = 1 if clear else 2
-            self.dbhandle.execute('update trajectories set status=? WHERE traj_id=?', (statuscode, traj_id,))
-            self.dbhandle.commit()
-            return self.isBeingProcessed(traj_id, clear)
-        except Exception as e:
-            log.warning(f'problem marking {traj_id} as being processed')
-            return False
+        for retry in range(10):
+            try:
+                statuscode = 1 if clear else 2
+                self.dbhandle.execute('update trajectories set status=? WHERE traj_id=?', (statuscode, traj_id,))
+                self.dbhandle.commit()
+                return self.isBeingProcessed(traj_id, clear)
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to update {traj_id} to {statuscode}, retry {retry+1}/10')
+                sleep(1)
+            except Exception:
+                log.warning(f'problem marking {traj_id} as being processed')
+                log.warning(str(e))
+                return False
+        # if we get to here, the retries failed
+        return False   
 
     def unmarkBeingProcessed(self, traj_id):
         return self.markBeingProcessed(traj_id, clear=True)
+
+    def safeDetachDatabase(self, dbname):
+        try:
+            self.dbhandle.execute("detach database 'archdb'")
+        except Exception:
+            pass
+        return
 
     def archiveTrajDatabase(self, db_path, arch_prefix, archdate_jd):
         """
@@ -683,7 +769,7 @@ class TrajectoryDatabase():
         Parameters:
         db_path     : path to the location of the archive database   
         arch_prefix : prefix to apply - typically of the form yyyymm. Set to None to purge data without archiving.
-        archdate_jd : julian date before which to archive data. Default is now-21 dayss
+        archdate_jd : julian date before which to archive data. Default is today - 21 days
 
         """
         # if no archdate is set, then set it to 21 days
@@ -693,30 +779,37 @@ class TrajectoryDatabase():
 
         log.info(f'{"Archiving" if arch_prefix else "Purging"} trajectories database')
 
-        purge_ok = True
-        if arch_prefix:
-            # create the archive database if it doesnt exist
-            archdb_name = f'{arch_prefix}_trajectories.db'
-            archdb = TrajectoryDatabase(db_path, archdb_name)
-            archdb.closeTrajDatabase()
+        for retry in range(10):
+            try:
+                archdb_name = f'{arch_prefix}_trajectories.db'
+                if arch_prefix:
+                    # attach the arch db, copy the records then delete them        
+                    archdb = TrajectoryDatabase(db_path, archdb_name)
+                    archdb.closeTrajDatabase()
+                    archdb_fullname = os.path.join(db_path, f'{archdb_name}')
+                    cur = self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+                    for table_name in ['trajectories', 'failed_trajectories']:
+                        cur.execute(f'insert or replace into archdb.{table_name} select * from {table_name} where jdt_ref<?',(archdate_jd,))
+                    self.dbhandle.commit()
+                    self.dbhandle.execute("detach database 'archdb'")
+                return self.purgeTrajDatabase(archdate_jd=archdate_jd)
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to {"archive" if arch_prefix else "purge"} trajectories, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to {"archive" if arch_prefix else "purge"} trajectories')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                return False
+        # if we got this far, the retries failed
+        self.dbhandle.commit()
+        self.safeDetachDatabase('archdb')
+        return  False
 
-            # attach the arch db, copy the records then delete them
-            archdb_fullname = os.path.join(db_path, f'{archdb_name}')
-            cur = self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
-            for table_name in ['trajectories', 'failed_trajectories']:
-                try:
-                    # bulk-copy if possible
-                    cur.execute(f'insert or replace into archdb.{table_name} select * from {table_name} where jdt_ref<?',(archdate_jd,))
-                except Exception:
-                    log.warning(f'unable to archive {table_name} in trajectories database')
-                    purge_ok = False
-
-            self.dbhandle.execute("detach database 'archdb'")
-            self.dbhandle.commit()
-
-        if purge_ok:
-            self.purgeTrajDatabase(archdate_jd=archdate_jd)
-        return 
     
     def purgeTrajDatabase(self, archdate_jd=None):
         """
@@ -730,16 +823,24 @@ class TrajectoryDatabase():
             archdate = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=21)
             archdate_jd = datetime2JD(archdate)
 
-        for table_name in ['trajectories', 'failed_trajectories']:
-            cur = self.dbhandle.execute(f'select count(*) from {table_name} where jdt_ref<?', (archdate_jd,))
-            res = cur.fetchone()
-            count = res[0] if res else 0
-            log.info(f'  purging {count} records from {table_name}')
-            self.dbhandle.execute(f'delete from {table_name} where jdt_ref<?', (archdate_jd,))
-        self.dbhandle.commit()
-        return         
-
-
+        for retry in range(10):
+            try:
+                for table_name in ['trajectories', 'failed_trajectories']:
+                    res = self.dbhandle.execute(f'select count(*) from {table_name} where jdt_ref<?', (archdate_jd,)).fetchall()
+                    log.info(f'  purging {res[0][0]} records from {table_name}')
+                    self.dbhandle.execute(f'delete from {table_name} where jdt_ref<?', (archdate_jd,))
+                    self.dbhandle.commit()
+                    return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to purge trajectory database, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning('unable to purge trajectory database')
+                log.warning(f'reason: {e}')
+                return False
+        # if we got this far, the retries failed
+        return  False
 
     def copyTrajJsonRecords(self, trajectories, dt_range, failed=True, max_days=14):
         """
@@ -784,26 +885,32 @@ class TrajectoryDatabase():
 
         if not os.path.isfile(source_db_path):
             log.warning(f'source database missing: {source_db_path}')
-            return 
-        # attach the other db, copy the records then detach it
-        try:
-            cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
-        except Exception:
-            log.warning(f'unable to attach {source_db_path}, it may be corrupt')
-            # return True so that the corrupt file is skipped / deleted
-            return True
+            return False
 
-        status = True
-        for table_name in ['trajectories', 'failed_trajectories']:
+        for retry in range(10):
             try:
-                # bulk-copy if possible
-                cur.execute(f'insert or replace into {table_name} select * from sourcedb.{table_name}')
-            except Exception:
-                log.warning(f'unable to merge data from {source_db_path}')
-                status = False
+                self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+                for table_name in ['trajectories', 'failed_trajectories']:
+                    self.dbhandle.execute(f'insert or replace into {table_name} select * from sourcedb.{table_name}')
+                    self.dbhandle.commit()
+                self.dbhandle.execute("detach database 'sourcedb'")
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to merge {source_db_path}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
+                sleep(1)
+            except Exception as e:
+                log.warning('unable to archive observations database')
+                log.warning(e)
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
+                return False
+        # if we got this far, the retries failed
         self.dbhandle.commit()
-        cur.execute("detach database 'sourcedb'")
-        return status
+        self.safeDetachDatabase('sourcedb')
+        return  False
 
 
 ############################################################
@@ -829,7 +936,7 @@ class CandidateDatabase():
         db_full_name = os.path.join(db_path, f'{db_name}')
         if verbose:
             log.info(f'opening database {db_full_name}')
-        con = sqlite3.connect(db_full_name, timeout=20)
+        con = sqlite3.connect(db_full_name)
         con.execute('pragma journal_mode=wal')
         res = con.execute("SELECT name FROM sqlite_master WHERE name='candidates'")
         if res.fetchone() is None:
@@ -874,21 +981,33 @@ class CandidateDatabase():
         obs_ids     : list of observation IDs
 
         Returns: 
-            True if added, False if its already present
+            True if added, False if its already present or the insert failed
         """
         
-        to_be_added = True
-        cur = self.dbhandle.execute('SELECT * FROM candidates WHERE cand_id=? and status=1', (cand_id,))
-        if cur.fetchone() is not None:
-            to_be_added = False
-        else:
-            to_be_added = True
-            obs_ids_str = json.dumps(list(set(obs_ids)))
-            self.dbhandle.execute('insert into candidates values (?,?,?,1)',(cand_id,ref_dt,obs_ids_str,))
-            self.dbhandle.commit()
-        if verbose:
-            log.info(f'{cand_id} {"was added to the database" if to_be_added else "already present"}')
-        return to_be_added
+        obs_ids_str = json.dumps(list(set(obs_ids)))
+        for retry in range(10):
+            try:
+                rws = self.dbhandle.execute('SELECT count(*) FROM candidates WHERE cand_id=?', (cand_id,)).fetchall()
+                if rws[0][0] == 0:
+                    self.dbhandle.execute('insert into candidates values (?,?,?,1)',(cand_id,ref_dt,obs_ids_str,))
+                    self.dbhandle.commit()
+                    if verbose:
+                        log.info(f'{cand_id} was added to the database')
+                    return True
+                else:
+                    if verbose:
+                        log.info(f'{cand_id} was already in the database')
+                    return False
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to insert {cand_id} , try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to insert {cand_id}')
+                log.warning(f'reason: {e}')
+                return False
+        # if we got this far, the retries failed
+        return  False
 
     def getCandidateObs(self, cand_id:str, verbose=False):
         """
@@ -928,10 +1047,10 @@ class CandidateDatabase():
             cand_id = os.path.splitext(cand_id)[0]
         try:
             if not clear:
-                chk = self.dbhandle.execute('select cand_id from candidates WHERE cand_id=? and status<>1', (cand_id,)).fetchall()
+                chk = self.dbhandle.execute('select count(cand_id) from candidates WHERE cand_id=? and status<>1', (cand_id,)).fetchall()
             else:
-                chk = self.dbhandle.execute('select cand_id from candidates WHERE cand_id=? and status=1', (cand_id,)).fetchall()
-            if len(chk) == 0:
+                chk = self.dbhandle.execute('select count(cand_id) from candidates WHERE cand_id=? and status=1', (cand_id,)).fetchall()
+            if chk[0][0] == 0:
                 return False
             return True
         except Exception as e:
@@ -952,33 +1071,31 @@ class CandidateDatabase():
         """
         if cand_id.endswith('.pickle'):
             cand_id = os.path.splitext(cand_id)[0]
-        try:
-            statuscode = 1 if clear else 2
-            self.dbhandle.execute('update candidates set status=? WHERE cand_id=?', (statuscode, cand_id,))
-            self.dbhandle.commit()
-            return self.isBeingProcessed(cand_id, clear)
-        except Exception as e:
-            log.warning(f'problem marking {cand_id} as being processed')
-            return False
+        statuscode = 1 if clear else 2
+        for retry in range(10):
+            try:
+                self.dbhandle.execute('update candidates set status=? WHERE cand_id=?', (statuscode, cand_id,))
+                self.dbhandle.commit()
+                return self.isBeingProcessed(cand_id, clear)
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to set {cand_id} status, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'problem marking {cand_id} as being processed')
+                log.warning(e)
+                return False
+        # if we get to here, the retries failed
+        return False
 
     def unmarkBeingProcessed(self, cand_id:str):
         return self.markBeingProcessed(cand_id, clear=True)
 
-    def purgeCandDatabase(self, archdate_jd=None):
-        """
-        purge old candidates after 'keep' weeks
-
-        Parameters:
-        keep    : days to keep data for, default 21
-        """
-        if archdate_jd is None:
-            keep_dt = datetime.datetime.now().replace(tzinfo=datetime.timezone.utc) - datetime.timedelta(days=21)
-        else:
-            keep_dt = jd2Date(archdate_jd,dt_obj=True)
-
-        log.info(f'purging candidates older than {keep_dt.isoformat()}')
-        self.dbhandle.execute('delete from candidates where ref_dt < ?', (keep_dt.timestamp(),))
-        self.dbhandle.commit()
+    def safeDetachDatabase(self, dbname):
+        try:
+            self.dbhandle.execute(f"detach database 'dbname'")
+        except Exception:
+            pass
         return 
     
     def archiveCandDatabase(self, db_path, arch_prefix, archdate_jd):
@@ -997,28 +1114,61 @@ class CandidateDatabase():
         else:
             keep_dt = jd2Date(archdate_jd,dt_obj=True)
 
-        purge_ok = True
-        if arch_prefix:
-            # create the archive database if it doesnt exist
-            archdb_name = f'{arch_prefix}_candidates.db'
-            archdb = CandidateDatabase(db_path, archdb_name, keep=0)
-            archdb.closeCandDatabase()
-
-            # attach the arch db, copy the records then delete them
-            archdb_fullname = os.path.join(db_path, f'{archdb_name}')
-            cur = self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+        for retry in range(10):
             try:
-                cur.execute('insert or replace into archdb.candidates select * from candidates where ref_dt < ?', (keep_dt.timestamp(),))
-            except Exception:
-                log.warning('unable to archive candidate database')
-                purge_ok = False
-
-        self.dbhandle.execute("detach database 'archdb'")
-        if purge_ok:
-            self.purgeCandDatabase(archdate_jd=archdate_jd)
-
+                if arch_prefix: 
+                    archdb_name = f'{arch_prefix}_candidates.db'
+                    archdb = CandidateDatabase(db_path, archdb_name, keep=0)
+                    archdb.closeCandDatabase()
+                    archdb_fullname = os.path.join(db_path, f'{archdb_name}')
+                    self.dbhandle.execute(f"attach database '{archdb_fullname}' as archdb")
+                    self.dbhandle.execute('insert or replace into archdb.candidates select * from candidates where ref_dt < ?', (keep_dt.timestamp(),))
+                    self.dbhandle.commit()
+                    self.dbhandle.execute("detach database 'archdb'")
+                return self.purgeCandDatabase(archdate_jd=archdate_jd)
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to {"archive" if arch_prefix else "purge"}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to {"archive" if arch_prefix else "purge"}')
+                log.warning(e)
+                self.dbhandle.commit()
+                self.safeDetachDatabase('archdb')
+                return False
         self.dbhandle.commit()
-        return 
+        self.safeDetachDatabase('archdb')
+        return  False
+
+    def purgeCandDatabase(self, archdate_jd=None):
+        """
+        purge old candidates after 'keep' weeks
+
+        Parameters:
+        keep    : days to keep data for, default 21
+        """
+        if archdate_jd is None:
+            keep_dt = datetime.datetime.now().replace(tzinfo=datetime.timezone.utc) - datetime.timedelta(days=21)
+        else:
+            keep_dt = jd2Date(archdate_jd,dt_obj=True)
+
+        log.info(f'purging candidates older than {keep_dt.isoformat()}')
+        for retry in range(10):
+            try:
+                self.dbhandle.execute('delete from candidates where ref_dt < ?', (keep_dt.timestamp(),))
+                self.dbhandle.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to purge cand db, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                sleep(1)
+            except Exception as e:
+                log.warning(f'failed to purge cand db')
+                log.warning(e)
+                return False
+        return  False
 
     def mergeCandDatabase(self, source_db_path):
         """
@@ -1032,25 +1182,30 @@ class CandidateDatabase():
         if not os.path.isfile(source_db_path):
             log.warning(f'source database missing: {source_db_path}')
             return 
-        # attach the other db, copy the records then detach it
-        try:
-            cur = self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
-        except Exception:
-            log.warning(f'unable to attach {source_db_path} - file may be corrupt')
-            # return true because if the file is corrupt we need to skip it
-            return True
 
-        status = True
-        for table_name in ['candidates']:
+        for retry in range(10):
             try:
-                # bulk-copy if possible
-                cur.execute(f'insert or replace into {table_name} select * from sourcedb.{table_name}')
-            except Exception:
-                log.warning(f'unable to merge data from {source_db_path}')
-                status = False
+                self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
+                self.dbhandle.execute(f'insert or replace into candidates select * from sourcedb.candidates')
+                self.dbhandle.commit()
+                self.dbhandle.execute("detach database 'sourcedb'")
+                return True
+            except sqlite3.OperationalError as e:
+                log.warning(f'failed to merge records from {source_db_path}, try {retry+1}/10')
+                log.warning(f'reason: {e}')
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
+                sleep(1)
+            except Exception as e:
+                log.warning('unable to merge candidate records')
+                log.warning(e)
+                self.dbhandle.commit()
+                self.safeDetachDatabase('sourcedb')
+                return False
+        # if we get this far, the retries failed. 
         self.dbhandle.commit()
-        cur.execute("detach database 'sourcedb'")
-        return status
+        self.safeDetachDatabase('sourcedb')
+        return  False
     
 
 ##################################################################################

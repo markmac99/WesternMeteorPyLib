@@ -23,10 +23,15 @@
 # THE SOFTWARE.
 
 import os
+import shutil
 import datetime
 from wmpl.Trajectory.CorrelateDB import TrajectoryDatabase, CandidateDatabase, ObservationsDatabase
 from wmpl.Trajectory.CorrelateRMS import TrajectoryReduced
-from wmpl.Utils.TrajConversions import date2JD
+from wmpl.Utils.TrajConversions import date2JD, datetime2JD
+import sqlite3
+import time
+import threading
+from zipfile import ZipFile
 
 dbloc = os.path.split(__file__)[0]
 jdt_beg = date2JD(2026,7,2,0,0,0)
@@ -38,6 +43,10 @@ test_traj_id = '20260718225156_h23G2'
 failed_traj_id = '20260712222653_4D7Xl'
 loaded_traj_path = '20260712_222508_trajectory.pickle'
 loaded_traj_id = '20260712222508_r89he'
+
+# extract the test data from the zip archive
+with ZipFile(os.path.join(dbloc,'test_dbs.zip'),'r') as zip_ref:
+    zip_ref.extractall(dbloc)
 
 ###################################################
 ## Candidate database tests
@@ -92,6 +101,39 @@ def test_CandDb():
 
     cdb.closeCandDatabase()
 
+def test_archAndPurgeCandDb():
+    shutil.copyfile(os.path.join(dbloc, 'test_cands.db'), os.path.join(dbloc, 'candidates.db'))
+    cdb = CandidateDatabase(dbloc, 'candidates.db')
+    rws = cdb.dbhandle.execute('select ref_dt from candidates order by ref_dt asc').fetchall()
+    arch_dt = (float(rws[-1][0])+float(rws[0][0]))/2.0
+    arch_jd = datetime2JD(datetime.datetime.fromtimestamp(arch_dt))
+    sts = cdb.archiveCandDatabase(dbloc, 'arch', arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from candidates').fetchall()
+    assert rws[0][0] == 52
+    cdb.closeCandDatabase()
+    cdb = CandidateDatabase(dbloc, 'arch_candidates.db')
+    rws = cdb.dbhandle.execute('select count(*) from candidates').fetchall()
+    assert rws[0][0] == 48
+    cdb.closeCandDatabase()
+    os.remove(os.path.join(dbloc, 'candidates.db'))
+    os.remove(os.path.join(dbloc, 'arch_candidates.db'))
+
+    shutil.copyfile(os.path.join(dbloc, 'test_cands.db'), os.path.join(dbloc, 'candidates.db'))
+    cdb = CandidateDatabase(dbloc, 'candidates.db')
+    sts = cdb.archiveCandDatabase(dbloc, None, arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from candidates').fetchall()
+    assert rws[0][0] == 52
+    cdb.closeCandDatabase()
+    os.remove(os.path.join(dbloc, 'candidates.db'))
+
+def test_mergeCandDb():
+    shutil.copyfile(os.path.join(dbloc, 'test_cands.db'), os.path.join(dbloc, 'candidates.db'))
+    cdb = CandidateDatabase(dbloc, 'candidates.db')
+    assert cdb.mergeCandDatabase(os.path.join(dbloc, 'test_mc.db'))
+    rws = cdb.dbhandle.execute('select count(*) from candidates').fetchall()
+    assert rws[0][0] == 131
+    cdb.closeCandDatabase()
+    os.remove(os.path.join(dbloc, 'candidates.db'))
 
 ###################################################
 ## Observations database tests
@@ -150,6 +192,42 @@ def test_createObsDatabase():
     os.remove(os.path.join(dbloc, 'dummy.db')) 
     return 
 
+
+def test_ArchAndPurgeObsDb():
+
+    # test archiving half the data
+    shutil.copyfile(os.path.join(dbloc, 'test_obs.db'), os.path.join(dbloc, 'observations.db'))
+    cdb = ObservationsDatabase(dbloc, 'observations.db')
+    rws = cdb.dbhandle.execute('select obs_dt from paired_obs order by obs_dt asc').fetchall()
+    arch_jd = (float(rws[-1][0])+float(rws[0][0]))/2.0
+    assert cdb.archiveObsDatabase(dbloc, 'arch', arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from paired_obs').fetchall()
+    assert rws[0][0] == 74
+    cdb.closeObsDatabase()
+    cdb = ObservationsDatabase(dbloc, 'arch_observations.db')
+    rws = cdb.dbhandle.execute('select count(*) from paired_obs').fetchall()
+    assert rws[0][0] == 26
+    cdb.closeObsDatabase()
+    os.remove(os.path.join(dbloc, 'observations.db'))
+    os.remove(os.path.join(dbloc, 'arch_observations.db'))
+
+    # test passing None for arch_prefix which purges without archiving
+    shutil.copyfile(os.path.join(dbloc, 'test_obs.db'), os.path.join(dbloc, 'observations.db'))
+    cdb = ObservationsDatabase(dbloc, 'observations.db')
+    assert cdb.archiveObsDatabase(dbloc, None, arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from paired_obs').fetchall()
+    assert rws[0][0] == 74
+    cdb.closeObsDatabase()
+    os.remove(os.path.join(dbloc, 'observations.db'))
+
+def test_mergeObsDb():
+    shutil.copyfile(os.path.join(dbloc, 'test_obs.db'), os.path.join(dbloc, 'observations.db'))
+    cdb = ObservationsDatabase(dbloc, 'observations.db')
+    assert cdb.mergeObsDatabase(os.path.join(dbloc, 'test_mo.db'))
+    rws = cdb.dbhandle.execute('select count(*) from paired_obs').fetchall()
+    assert rws[0][0] == 146
+    cdb.closeObsDatabase()
+    os.remove(os.path.join(dbloc, 'observations.db'))
 
 ############################################
 # Trajectories Database Tests
@@ -402,3 +480,66 @@ def test_removeTrajectoryById():
     assert trajdb.removeTrajectoryById(r'20260712;drop table frobozz') 
 
     trajdb.closeTrajDatabase()
+
+
+def test_archAndPurgeTrajDb():
+    shutil.copyfile(os.path.join(dbloc, 'test_traj.db'), os.path.join(dbloc, 'trajectories.db'))
+    cdb = TrajectoryDatabase(dbloc, 'trajectories.db')
+    rws = cdb.dbhandle.execute('select jdt_ref from trajectories order by jdt_ref asc').fetchall()
+    arch_jd = (float(rws[-1][0])+float(rws[0][0]))/2.0
+    assert cdb.archiveTrajDatabase(dbloc, 'arch', arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from trajectories').fetchall()
+    assert rws[0][0] == 34
+    cdb.closeTrajDatabase()
+    cdb = TrajectoryDatabase(dbloc, 'arch_trajectories.db')
+    rws = cdb.dbhandle.execute('select count(*) from trajectories').fetchall()
+    assert rws[0][0] == 15
+    cdb.closeTrajDatabase()
+    os.remove(os.path.join(dbloc, 'trajectories.db'))
+    os.remove(os.path.join(dbloc, 'arch_trajectories.db'))
+
+    shutil.copyfile(os.path.join(dbloc, 'test_traj.db'), os.path.join(dbloc, 'trajectories.db'))
+    cdb = TrajectoryDatabase(dbloc, 'trajectories.db')
+    assert cdb.archiveTrajDatabase(dbloc, None, arch_jd)
+    rws = cdb.dbhandle.execute('select count(*) from trajectories').fetchall()
+    assert rws[0][0] == 34
+    cdb.closeTrajDatabase()
+    os.remove(os.path.join(dbloc, 'trajectories.db'))
+
+def test_mergeTrajDb():
+    shutil.copyfile(os.path.join(dbloc, 'test_traj.db'), os.path.join(dbloc, 'trajectories.db'))
+    cdb = TrajectoryDatabase(dbloc, 'trajectories.db')
+    assert cdb.mergeTrajDatabase(os.path.join(dbloc, 'test_mt.db'))
+    rws = cdb.dbhandle.execute('select count(*) from trajectories').fetchall()
+    assert rws[0][0] == 71
+    cdb.closeTrajDatabase()
+    os.remove(os.path.join(dbloc, 'trajectories.db'))
+
+###################################################
+## test for locking strategies
+
+def worker(db_file):
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("BEGIN EXCLUSIVE")
+        time.sleep(2)  # Simulate long operation
+        conn.execute("drop TABLE IF EXISTS tasks")
+        conn.execute("CREATE TABLE tasks (id INTEGER)")
+        conn.execute("drop TABLE IF EXISTS tasks")
+        conn.commit()
+
+def test_lockedTrajDb():
+    # launch a thread that locks the database for two seconds
+    thread = threading.Thread(target=worker, args=(os.path.join(dbloc, 'test_traj.db'),))
+    thread.start()
+
+    trajdb = TrajectoryDatabase(dbloc, 'test_traj.db')
+    #reset_trajdb(trajdb)
+
+    # test a real successful trajectory
+    trajdb.removeTrajectoryById(f'{test_traj_id}')
+    cur = trajdb.dbhandle.execute(f"select count(*) from trajectories where traj_id = '{test_traj_id}' and status=0")
+    dta = cur.fetchall()
+    numrows = dta[0][0]
+    assert numrows == 1
+    reset_trajdb(trajdb)
+
