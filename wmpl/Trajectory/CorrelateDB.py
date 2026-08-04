@@ -902,7 +902,7 @@ class TrajectoryDatabase():
                 self.safeDetachDatabase('sourcedb')
                 sleep(1)
             except Exception as e:
-                log.warning('unable to archive observations database')
+                log.warning(f'failed to merge {source_db_path}')
                 log.warning(e)
                 self.dbhandle.commit()
                 self.safeDetachDatabase('sourcedb')
