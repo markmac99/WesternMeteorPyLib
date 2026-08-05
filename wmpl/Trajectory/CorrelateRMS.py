@@ -520,7 +520,7 @@ class RMSDataHandle(object):
             self.dt_range=[dt_beg, dt_end]
 
         self.candidate_db = None
-        if mcmode == MCMODE_CANDS or mcmode == MCMODE_PHASE1:
+        if mcmode & MCMODE_CANDS or mcmode & MCMODE_PHASE1:
             daystokeep = daysback if mcmode == MCMODE_CANDS else 999
             self.candidate_db = CandidateDatabase(db_dir, keep=daystokeep)
         
@@ -1622,7 +1622,7 @@ class RMSDataHandle(object):
         for fil in os.listdir(save_path)[:self.max_trajs]:
             if '.pickle' not in fil: 
                 continue
-            if self.candidate_db.isBeingProcessed(fil):
+            if self.candidate_db and self.candidate_db.isBeingProcessed(fil):
                 continue
             try:
                 loadedpickle = loadPickle(save_path, fil)
@@ -1640,12 +1640,14 @@ class RMSDataHandle(object):
 
         return candidate_trajectories
 
-    def markCandAsProcessed(self, cand_id):
+    def markCandAsProcessed(self, cand_id, verbose=False):
         """
         Clear the being-processed flag and move the candidate to the processed/ folder
         """
         pickle_name = f'{cand_id}.pickle'
         targ_dir = os.path.join(self.candidate_dir, 'processed')  
+        if verbose:
+            log.info(f'moving {pickle_name} from {self.candidate_dir} to {targ_dir}')
         safeCopyOrMove(pickle_name, self.candidate_dir, targ_dir, move=True)
         if self.candidate_db:
             self.candidate_db.unmarkBeingProcessed(cand_id)

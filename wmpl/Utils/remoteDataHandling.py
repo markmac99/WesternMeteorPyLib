@@ -193,10 +193,14 @@ class RemoteDataHandler():
         rem_name:   [string] the target name for the file
         """
 
+        if not os.path.isfile(local_name):
+            return False
         temp_rem_name = f'{rem_name}.filepart'
+        errmsg = ''
         for i in range(10): 
             try:
-                # try to put the file. If this fails, catch the exception further down, and retry
+                # try to put the file with the temporary name, then rename it. 
+                # If this fails, catch the exceptions and retry 
                 self.sftp_client.put(local_name, temp_rem_name)
 
                 # now try to rename the file to the required final name, returning immediately if we succeed
@@ -210,12 +214,12 @@ class RemoteDataHandler():
                     self.sftp_client.rename(temp_rem_name, rem_name)
                     return True
                 except Exception as e:
-                    # if we can't remove or rename the file, log a warning and try again 
-                    log.warning(str(e))
+                    errmsg = e
             except Exception as e:
-                log.warning(str(e))
-                time.sleep(1)
-        log.warning(f'upload of {local_name} failed after 10 retries')
+                errmsg = e
+            time.sleep(1)
+        log.warning(f'upload of {local_name} failed after 10 retries, will be re-attempted on the next loop')
+        log.warning(f'reason: {errmsg}')
         return False
 
     def getWithRetry(self, rem_name, local_name):
@@ -228,14 +232,16 @@ class RemoteDataHandler():
         rem_name:   [string] remote filename to collect.
         local_name: [string] local name to save to.
         """
+        errmsg = ''
         for i in range(10): 
             try:
                 self.sftp_client.get(rem_name, local_name)
                 return True
             except Exception as e:
-                log.warning(str(e))
+                errmsg = e
             time.sleep(1)
         log.warning(f'download of {rem_name} failed after 10 retries')
+        log.warning(f'reason: {errmsg}')
         return False
     
     def collectRemoteData(self, datatype, output_dir, verbose=False):

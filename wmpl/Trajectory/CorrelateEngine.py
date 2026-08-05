@@ -1645,7 +1645,7 @@ class TrajectoryCorrelator(object):
 
                 log.info("")
                 log.info("-----------------------")
-                cand_id = self.dh.getCandidateId(matched_observations) if mcmode==MCMODE_PHASE1 else ''
+                cand_id = self.dh.getCandidateId(matched_observations) if mcmode & MCMODE_PHASE1 else ''
                 log.info(f'processing {"candidate" if mcmode==MCMODE_PHASE1 else "trajectory"} {cand_id} {i+1}/{num_traj}')
 
                 # if mcmode is not 2, prepare to calculate the intersecting planes solutions
