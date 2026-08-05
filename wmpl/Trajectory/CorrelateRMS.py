@@ -564,7 +564,7 @@ class RMSDataHandle(object):
             self.RemoteDatahandler = RemoteDataHandler(remote_cfg)
             if self.RemoteDatahandler.mode == 'child':
                 self.RemoteDatahandler.clearStopFlag()
-                status = self.getRemoteData(verbose=True)
+                status = self.getRemoteData(verbose=False)
             else:
                 status = self.moveUploadedData(verbose=False)                
             if not status:
