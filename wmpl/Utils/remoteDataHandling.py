@@ -358,8 +358,8 @@ class RemoteDataHandler():
                 if os.path.isdir(local_ph1_name):
                     continue
                 rem_ph1_name = f'files/phase1/{fil}'
-                #if verbose:
-                log.info(f'uploading {local_name} to {rem_ph1_name}')
+                if verbose:
+                    log.info(f'uploading {local_name} to {rem_ph1_name}')
                 # If the upload is successful, we can delete the local file
                 if self.putWithRetry(local_ph1_name, rem_ph1_name): 
                     os.remove(local_ph1_name)
