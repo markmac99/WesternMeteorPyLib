@@ -1050,10 +1050,17 @@ class RMSDataHandle(object):
         traj_list = self.trajectory_db.getTrajBasics(self.output_dir, jdt_range)
         i = 0
         for traj in traj_list:  
-            if not os.path.isfile(os.path.join(self.output_dir, traj['traj_file_path'])):
-                log.info(f'    removing nonexistent traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
-                self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
-                i += 1
+            # check phase1-path as well in case the traj upload from remote nodes is still pending
+            try:
+                ph1_path = os.path.split(traj['traj_file_path'])[0]
+                ph1_path = os.path.join(self.phase1_dir, f'{os.path.split(ph1_path)[1]}_trajectory.pickle')
+                traj_path = os.path.join(self.output_dir, traj['traj_file_path'])
+                if not os.path.isfile(traj_path) and not os.path.isfile(ph1_path):
+                    log.info(f'    removing nonexistent traj {jd2Date(traj["jdt_ref"],dt_obj=True).strftime("%Y%m%d_%H%M%S.%f")} {traj["traj_file_path"]} from database')
+                    self.removeTrajectory(TrajectoryReduced(None, json_dict=traj))
+                    i += 1
+            except Exception:
+                pass
         log.info(f'  removed {i} deleted trajectories')
 
         #
@@ -1461,7 +1468,7 @@ class RMSDataHandle(object):
 
     def removeTrajectory(self, traj_reduced, remove_phase1=False):
         """ 
-        Remove the trajectory from the data base and disk. 
+        Remove the trajectory from the database and disk. 
         """
 
         # in mcmode 2 the database isn't loaded but we still need to delete updated trajectories
