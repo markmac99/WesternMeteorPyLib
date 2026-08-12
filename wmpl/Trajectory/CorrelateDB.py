@@ -1229,7 +1229,11 @@ class CandidateDatabase():
         for retry in range(10):
             try:
                 self.dbhandle.execute(f"attach database '{source_db_path}' as sourcedb")
-                self.dbhandle.execute(f'insert or replace into candidates select * from sourcedb.candidates')
+                try:
+                    self.dbhandle.execute(f'insert or replace into candidates select * from sourcedb.candidates')
+                except Exception as e:
+                    log.warning(f'skipping  {source_db_path}')
+                    log.warning(f'reason: {e}')
                 self.dbhandle.commit()
                 self.dbhandle.execute("detach database 'sourcedb'")
                 return True
