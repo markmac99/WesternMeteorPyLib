@@ -485,7 +485,8 @@ class TrajectoryDatabase():
                     sleep(1)
                 except Exception as e:
                     log.warning(f'unable to close traj database')
-                    log.warning(f'reason: {e}')    
+                    log.warning(f'reason: {e}')
+                    sleep(2)
         # if we got this far, the retries failed
         return 
 
