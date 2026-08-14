@@ -459,7 +459,10 @@ class TrajectoryDatabase():
         try:
             self.dbhandle.execute('pragma wal_checkpoint(TRUNCATE)')
         except Exception:
-            self.dbhandle.execute('pragma wal_checkpoint(PASSIVE)')
+            try:
+                self.dbhandle.execute('pragma wal_checkpoint(PASSIVE)')
+            except Exception:
+                pass
         return 
 
     def closeTrajDatabase(self, verbose=False):
@@ -470,9 +473,20 @@ class TrajectoryDatabase():
         if verbose:
             log.info('close trajdb')
         if self.dbhandle:
-            self._commitTrajDatabase(verbose=verbose)
-            self.dbhandle.close()
-            self.dbhandle = None
+            for retry in range(10):
+                try:
+                    self._commitTrajDatabase(verbose=verbose)
+                    self.dbhandle.close()
+                    self.dbhandle = None
+                    return 
+                except sqlite3.OperationalError as e:
+                    log.warning(f'failed to commit and close {self.db_name}, try {retry+1}/10')
+                    log.warning(f'reason: {e}')
+                    sleep(1)
+                except Exception as e:
+                    log.warning(f'unable to close traj database')
+                    log.warning(f'reason: {e}')    
+        # if we got this far, the retries failed
         return 
 
     def checkTrajIfFailed(self, traj_reduced, verbose=False):
