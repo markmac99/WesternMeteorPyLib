@@ -1494,7 +1494,7 @@ class TrajectoryCorrelator(object):
 
                                 # some older trajectories may have simple numeric Obs IDs - we can't use these
                                 unusable = [x for x in unpair_ids if isinstance(x, int) or len(x) < 4]
-                                if len(unusable) == 0:
+                                if len(unusable) == 0 and len(unpair_ids) > 0:
                                     log.info('Potential new obs:')
                                     for obs_new, _ in candidate_observations:
                                         log.info(f'  {obs_new.obs_id}')
